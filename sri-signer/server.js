@@ -1,10 +1,9 @@
 import express from 'express';
 import cors from 'cors';
-import forge from 'node-forge';
-import { SignedXml } from 'xml-crypto';
 import { DOMParser } from 'xmldom';
 import axios from 'axios';
 import nodemailer from 'nodemailer';
+import { signInvoiceXml } from 'ec-sri-invoice-signer';
 
 const app = express();
 app.use(cors());
@@ -26,38 +25,9 @@ const SRI_URLS = {
 
 // =============== FIRMADO XAdES-BES ===============
 function firmarXML(xmlString, p12Buffer, password) {
-  // 1. Cargar el .p12
-  const p12Asn1 = forge.asn1.fromDer(p12Buffer.toString('binary'));
-  const p12 = forge.pkcs12.pkcs12FromAsn1(p12Asn1, password);
-
-  // 2. Extraer clave privada y certificado
-  const keyBags = p12.getBags({ bagType: forge.pki.oids.pkcs8ShroudedKeyBag });
-  const certBags = p12.getBags({ bagType: forge.pki.oids.certBag });
-  const privateKey = keyBags[forge.pki.oids.pkcs8ShroudedKeyBag][0].key;
-  const certificate = certBags[forge.pki.oids.certBag][0].cert;
-
-  const privateKeyPem = forge.pki.privateKeyToPem(privateKey);
-  const certPem = forge.pki.certificateToPem(certificate);
-
-  // 3. Firmar con xml-crypto (XAdES-BES simplificado)
-  const sig = new SignedXml({
-    privateKey: privateKeyPem,
-    publicCert: certPem,
-    signatureAlgorithm: 'http://www.w3.org/2000/09/xmldsig#rsa-sha1',
-    canonicalizationAlgorithm: 'http://www.w3.org/TR/2001/REC-xml-c14n-20010315',
-  });
-
-  sig.addReference({
-    xpath: "//*[local-name(.)='factura']",
-    digestAlgorithm: 'http://www.w3.org/2000/09/xmldsig#sha1',
-    transforms: ['http://www.w3.org/2000/09/xmldsig#enveloped-signature'],
-  });
-
-  sig.computeSignature(xmlString, {
-    location: { reference: "//*[local-name(.)='factura']", action: 'append' },
-  });
-
-  return sig.getSignedXml();
+  // Firma XAdES-BES estricta para comprobantes SRI Ecuador.
+  // Si la contraseña desencriptada fuera incorrecta, esta función falla antes de enviar al SRI.
+  return signInvoiceXml(xmlString, p12Buffer, { pkcs12Password: password });
 }
 
 // =============== ENVÍO SOAP AL SRI ===============

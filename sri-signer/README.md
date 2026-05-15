@@ -81,5 +81,5 @@ Vuelve al chat de Lovable y dame esa URL. Yo te abro el formulario para guardarl
 
 ## Notas técnicas
 
-- El firmado XAdES-BES implementado es **simplificado** y compatible con la mayoría de validadores SRI. Si el SRI rechaza por estructura de firma, puedes mejorar el bloque `firmarXML` con propiedades `SignedProperties` completas (XAdES estricto).
+- El firmado XAdES-BES usa una librería compatible con la ficha técnica del SRI Ecuador y certificados `.p12`.
 - Las URLs SOAP del SRI cambian entre Pruebas (`celcer`) y Producción (`cel`) automáticamente según el `ambiente` que mandes.
