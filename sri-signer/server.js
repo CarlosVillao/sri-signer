@@ -229,8 +229,9 @@ firmado = firmado.replace(
   '<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">'
 );
 
-return firmado;
   console.log('XML firmado tamaño:', xmlFirmado.length);
+return firmado;
+}  
 
 function getTag(xml, tagName) {
   return xml.match(new RegExp(`<${tagName}>(.*?)</${tagName}>`))?.[1]?.trim() ?? null;
