@@ -164,13 +164,16 @@ async function firmarXML(xmlString, p12Buffer, password) {
   // =========================
 // CERTIFICADO
 // =========================
-const certBase64 = forge.util.encode64(
-  forge.asn1
-    .toDer(
-      forge.pki.certificateToAsn1(cert)
-    )
-    .getBytes()
-);
+const certDer = forge.asn1
+  .toDer(
+    forge.pki.certificateToAsn1(cert)
+  )
+  .getBytes();
+
+const certBase64 = Buffer.from(
+  certDer,
+  'binary'
+).toString('base64');
 
 // =========================
 // EXPORTAR PKCS8 REAL
@@ -249,6 +252,8 @@ await signedXml.Sign(
   key,
   xmlDoc,
   {
+    keyValue: undefined,
+
     references: [
       {
         hash: 'SHA-1',
@@ -263,6 +268,11 @@ await signedXml.Sign(
 
 const xmlFirmado =
   signedXml.toString();
+  
+  console.log(
+  'XML firmado preview:',
+  xmlFirmado.substring(0, 1500)
+);
 
   console.log(
     'XML firmado tamaño:',
