@@ -9,6 +9,7 @@ import { createHash } from 'crypto';
 import fs from 'fs';
 import { SignedXml } from 'xml-crypto';
 import { DOMParser as XmlDomParser } from 'xmldom';
+import https from 'https';
 
 const app = express();
 app.use(cors());
@@ -347,7 +348,12 @@ function validarCertificadoContraXml({ xml, certInfo }) {
 
 // =============== ENVÍO SOAP AL SRI ===============
 async function enviarRecepcion(xmlFirmado, ambiente) {
-  const xmlBase64 = Buffer.from(xmlFirmado, 'utf8').toString('base64');
+
+  const xmlBase64 = Buffer.from(
+    xmlFirmado,
+    'utf8'
+  ).toString('base64');
+
   const soap = `<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ec="http://ec.gob.sri.ws.recepcion">
   <soapenv:Body>
@@ -357,15 +363,71 @@ async function enviarRecepcion(xmlFirmado, ambiente) {
   </soapenv:Body>
 </soapenv:Envelope>`;
 
-  const url = SRI_URLS[ambiente].recepcion.replace('?wsdl', '');
+  const url =
+    SRI_URLS[ambiente].recepcion.replace(
+      '?wsdl',
+      ''
+    );
+
   console.log('Enviando a recepcion SRI...');
-  const res = await axios.post(url, soap, {
-    headers: { 'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': '' },
-    timeout: 30000,
+
+  const httpsAgent = new https.Agent({
+    keepAlive: false,
+    rejectUnauthorized: true,
   });
-  console.log('SRI recepcion respondio');
-  const estadoMatch = res.data.match(/<estado>(.*?)<\/estado>/);
-  return { estado: estadoMatch?.[1] ?? 'DESCONOCIDO', raw: res.data, mensajes: extraerMensajesSri(res.data) };
+
+  try {
+
+    const res = await axios.post(
+      url,
+      soap,
+      {
+        headers: {
+          'Content-Type':
+            'text/xml; charset=utf-8',
+          SOAPAction: '',
+          Connection: 'close'
+        },
+
+        httpsAgent,
+
+        timeout: 60000,
+
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+      }
+    );
+
+    console.log(
+      'SRI recepcion respondio'
+    );
+
+    const estadoMatch =
+      res.data.match(
+        /<estado>(.*?)<\/estado>/
+      );
+
+    return {
+      estado:
+        estadoMatch?.[1] ??
+        'DESCONOCIDO',
+
+      raw: res.data,
+
+      mensajes:
+        extraerMensajesSri(res.data)
+    };
+
+  } catch (error) {
+
+    console.error(
+      'ERROR SRI RECEPCION:',
+      error.code,
+      error.message
+    );
+
+    throw error;
+  }
 }
 
 function extraerMensajesSri(rawXml) {
