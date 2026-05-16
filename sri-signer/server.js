@@ -166,7 +166,7 @@ function firmarXML(xmlString, p12Buffer, password) {
   const doc = new XmlDomParser().parseFromString(xmlString);
 
   // Crear firmador
-// Crear firmador
+console.log('Enviando a recepcion SRI...');
 const sig = new SignedXml({
   privateKey: privateKeyPem,
   publicCert: certPem,
@@ -230,6 +230,7 @@ firmado = firmado.replace(
 );
 
 return firmado;
+  console.log('XML firmado tamaño:', xmlFirmado.length);
 
 function getTag(xml, tagName) {
   return xml.match(new RegExp(`<${tagName}>(.*?)</${tagName}>`))?.[1]?.trim() ?? null;
