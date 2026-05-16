@@ -1,6 +1,5 @@
 import express from 'express';
 import cors from 'cors';
-import { DOMParser } from 'xmldom';
 import axios from 'axios';
 import nodemailer from 'nodemailer';
 import forge from 'node-forge';
@@ -9,8 +8,9 @@ import { createHash } from 'crypto';
 import fs from 'fs';
 import * as xadesjs from 'xadesjs';
 import { Crypto } from '@peculiar/webcrypto';
-import { DOMParser as XmlDomParser } from 'xmldom';
 import https from 'https';
+import { DOMParser, XMLSerializer } from 'xmldom';
+import * as xpath from 'xpath';
 
 const app = express();
 app.use(cors());
@@ -23,6 +23,11 @@ xadesjs.Application.setEngine(
   'NodeJS',
   new Crypto()
 );
+
+xadesjs.Application.setNodeDependencies({
+  DOMParser,
+  XMLSerializer,
+});
 
 // URLs SRI Ecuador
 const SRI_URLS = {
@@ -161,10 +166,6 @@ async function firmarXML(xmlString, p12Buffer, password) {
   // =========================
 // CERTIFICADO
 // =========================
-
-const certPem =
-  forge.pki.certificateToPem(cert);
-
 const certBase64 = forge.util.encode64(
   forge.asn1
     .toDer(
@@ -209,7 +210,7 @@ const key = await crypto.subtle.importKey(
   privateKeyBuffer,
   {
     name: 'RSASSA-PKCS1-v1_5',
-    hash: 'SHA-256',
+    hash: 'SHA-1',
   },
   false,
   ['sign']
@@ -219,7 +220,7 @@ const key = await crypto.subtle.importKey(
   // =========================
 
   const xmlDoc =
-    new XmlDomParser().parseFromString(
+    new DOMParser().parseFromString(
       xmlString,
       'text/xml'
     );
@@ -227,22 +228,34 @@ const key = await crypto.subtle.importKey(
   // =========================
   // FIRMAR XAdES-BES
   // =========================
+const facturaNode = xmlDoc.documentElement;
 
+if (
+  !facturaNode.getAttribute('Id') &&
+  !facturaNode.getAttribute('id')
+) {
+  facturaNode.setAttribute(
+    'Id',
+    'comprobante'
+  );
+}
+  
   const signedXml =
   new xadesjs.SignedXml();
 
 await signedXml.Sign(
   {
     name: 'RSASSA-PKCS1-v1_5',
-    hash: 'SHA-256',
+    hash: 'SHA-1',
   },
   key,
   xmlDoc,
   {
     references: [
       {
-        hash: 'SHA-256',
+        hash: 'SHA-1',
         transforms: ['enveloped'],
+        uri: '#comprobante',
       },
     ],
 
