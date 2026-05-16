@@ -7,7 +7,8 @@ import forge from 'node-forge';
 import { XMLValidator } from 'fast-xml-parser';
 import { createHash } from 'crypto';
 import fs from 'fs';
-//import { SignedXml } from 'xml-crypto';
+import * as xadesjs from 'xadesjs';
+import { Crypto } from '@peculiar/webcrypto';
 import { DOMParser as XmlDomParser } from 'xmldom';
 import https from 'https';
 
@@ -17,6 +18,11 @@ app.use(express.json({ limit: '10mb' }));
 
 const PORT = process.env.PORT || 3000;
 const SERVICE_VERSION = '1.0.3-sri-xml-diagnostics';
+
+xadesjs.Application.setEngine(
+  'NodeJS',
+  new Crypto()
+);
 
 // URLs SRI Ecuador
 const SRI_URLS = {
@@ -104,11 +110,12 @@ const newP12Asn1 = forge.pkcs12.toPkcs12Asn1(
   };
 }
 
-// =============== FIRMADO XAdES-BES ===============
-function firmarXML(xmlString, p12Buffer, password) {
+// =============== FIRMADO XAdES-BES REAL ===============
+async function firmarXML(xmlString, p12Buffer, password) {
 
-  // Leer PKCS12
-  const p12Asn1 = forge.asn1.fromDer(p12Buffer.toString('binary'));
+  const p12Asn1 = forge.asn1.fromDer(
+    p12Buffer.toString('binary')
+  );
 
   const p12 = forge.pkcs12.pkcs12FromAsn1(
     p12Asn1,
@@ -116,123 +123,124 @@ function firmarXML(xmlString, p12Buffer, password) {
     password
   );
 
-  // Obtener llave privada
   const keyBags = p12.getBags({
     bagType: forge.pki.oids.pkcs8ShroudedKeyBag,
   })[forge.pki.oids.pkcs8ShroudedKeyBag];
 
-  if (!keyBags || keyBags.length === 0) {
-    throw new Error('No se encontró llave privada en el .p12');
-  }
-
-  const privateKeyPem = forge.pki.privateKeyToPem(
-    keyBags[0].key
-  );
-
-  // Obtener certificado válido NO CA
   const certBags = p12.getBags({
     bagType: forge.pki.oids.certBag,
   })[forge.pki.oids.certBag];
 
-  const now = new Date();
+  if (!keyBags?.length) {
+    throw new Error(
+      'No se encontró llave privada'
+    );
+  }
 
   const cert = certBags
     .map(b => b.cert)
-    .filter(c => {
-      const bc = c.getExtension?.('basicConstraints');
+    .find(c => {
+      const bc =
+        c.getExtension?.('basicConstraints');
+
       return !bc?.cA;
-    })
-    .filter(c =>
-      c.validity.notBefore <= now &&
-      c.validity.notAfter > now
-    )
-    .sort((a, b) =>
-      b.validity.notAfter - a.validity.notAfter
-    )[0];
+    });
 
   if (!cert) {
-    throw new Error('No se encontró certificado válido');
+    throw new Error(
+      'No se encontró certificado válido'
+    );
   }
 
-  // Certificado PEM
-  const certPem = forge.pki.certificateToPem(cert);
+  // =========================
+  // PEM
+  // =========================
 
-  // Limpiar PEM
-  const certBase64 = certPem
-    .replace('-----BEGIN CERTIFICATE-----', '')
-    .replace('-----END CERTIFICATE-----', '')
-    .replace(/\r?\n|\r/g, '');
+  const privateKeyPem =
+    forge.pki.privateKeyToPem(
+      keyBags[0].key
+    );
 
-  // Parse XML
-  const doc = new XmlDomParser().parseFromString(xmlString);
+  const certPem =
+  forge.pki.certificateToPem(cert);
 
-  // Crear firmador
-console.log('Enviando a recepcion SRI...');
-const sig = new SignedXml({
-  privateKey: privateKeyPem,
-  publicCert: certPem,
-});
+  const certDer = forge.asn1
+    .toDer(forge.pki.certificateToAsn1(cert))
+    .getBytes();
 
-sig.signatureAlgorithm =
-  'http://www.w3.org/2000/09/xmldsig#rsa-sha1';
+  const certBuffer = Buffer.from(
+    certDer,
+    'binary'
+  );
 
-sig.canonicalizationAlgorithm =
-  'http://www.w3.org/TR/2001/REC-xml-c14n-20010315';
+  // =========================
+  // IMPORTAR LLAVE
+  // =========================
 
-sig.addReference({
-  xpath: "//*[@id='comprobante']",
-  transforms: [
-    'http://www.w3.org/2000/09/xmldsig#enveloped-signature',
-    'http://www.w3.org/TR/2001/REC-xml-c14n-20010315'
-  ],
-  digestAlgorithm:
-    'http://www.w3.org/2000/09/xmldsig#sha1',
-  uri: '#comprobante'
-});
+  const crypto = new Crypto();
 
-// KeyInfo correcto
-sig.keyInfoProvider = {
-  getKeyInfo() {
-    return `
-<ds:X509Data>
-<ds:X509Certificate>${certBase64}</ds:X509Certificate>
-</ds:X509Data>
-`;
-  }
-};
+  const key = await crypto.subtle.importKey(
+    'pkcs8',
+    Buffer.from(
+      privateKeyPem
+        .replace(/-----(BEGIN|END) PRIVATE KEY-----/g, '')
+        .replace(/\s+/g, ''),
+      'base64'
+    ),
+    {
+      name: 'RSASSA-PKCS1-v1_5',
+      hash: 'SHA-1'
+    },
+    false,
+    ['sign']
+  );
 
-// Forzar namespace ds
-sig.namespaceResolver = {
-  lookupNamespaceURI(prefix) {
-    if (prefix === 'ds') {
-      return 'http://www.w3.org/2000/09/xmldsig#';
-    }
-    return null;
-  }
-};
+  // =========================
+  // PARSE XML
+  // =========================
 
-sig.computeSignature(xmlString, {
-  prefix: 'ds',
-  attrs: {
-    Id: 'Signature'
-  },
-  location: {
-    reference: "//*[local-name(.)='factura']",
-    action: 'append'
-  }
-});
+  const xmlDoc =
+    new XmlDomParser().parseFromString(
+      xmlString,
+      'text/xml'
+    );
 
-let firmado = sig.getSignedXml();
+  // =========================
+  // FIRMAR XAdES-BES
+  // =========================
 
-// Forzar ds namespace
-firmado = firmado.replace(
-  '<ds:Signature>',
-  '<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">'
-);
+  const signedXml =
+    await xadesjs.SignedXml.Sign(
+      {
+        name: 'RSASSA-PKCS1-v1_5',
+        hash: { name: 'SHA-1' },
+      },
+      key,
+      xmlDoc,
+      {
+        references: [
+          {
+            hash: 'SHA-1',
+            transforms: [
+              'enveloped'
+            ],
+          },
+        ],
 
-  console.log('XML firmado tamaño:', firmado.length);
-return firmado;
-}  
+        signingCertificate: certBuffer,
+      }
+    );
+
+  const xmlFirmado =
+    signedXml.toString();
+
+  console.log(
+    'XML firmado tamaño:',
+    xmlFirmado.length
+  );
+
+  return xmlFirmado;
+}
 
 function getTag(xml, tagName) {
   return xml.match(new RegExp(`<${tagName}>(.*?)</${tagName}>`))?.[1]?.trim() ?? null;
@@ -549,7 +557,7 @@ app.post('/procesar-factura', async (req, res) => {
       validFrom: certVigente.validity.notBefore.toISOString().slice(0, 10),
       validTo: certVigente.validity.notAfter.toISOString().slice(0, 10),
     });
-    const xmlFirmado = firmarXML(xmlLimpio, p12Vigente, certPassword);
+    const xmlFirmado = await firmarXML(xmlLimpio, p12Vigente, certPassword);
     console.log('XML firmado correctamente', {
       numeroFactura,
       contieneSignature: xmlFirmado.includes('<ds:Signature'),
