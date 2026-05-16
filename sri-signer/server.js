@@ -332,10 +332,12 @@ async function enviarRecepcion(xmlFirmado, ambiente) {
 </soapenv:Envelope>`;
 
   const url = SRI_URLS[ambiente].recepcion.replace('?wsdl', '');
+  console.log('Enviando a recepcion SRI...');
   const res = await axios.post(url, soap, {
     headers: { 'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': '' },
     timeout: 30000,
   });
+  console.log('SRI recepcion respondio');
   const estadoMatch = res.data.match(/<estado>(.*?)<\/estado>/);
   return { estado: estadoMatch?.[1] ?? 'DESCONOCIDO', raw: res.data, mensajes: extraerMensajesSri(res.data) };
 }
