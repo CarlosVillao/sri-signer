@@ -259,11 +259,11 @@ await signedXml.Sign(
       },
     ],
 
-    signingCertificate: certBase64,
+    cert: certBase64,
   }
 );
 
-const xmlFirmado = new XMLSerializer().serializeToString(xmlDoc);
+const xmlFirmado = signedXml.toString();
  
   console.log(
   'Tiene Signature:',
