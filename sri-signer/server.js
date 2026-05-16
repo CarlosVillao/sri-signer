@@ -235,9 +235,6 @@ const key = await crypto.subtle.importKey(
   // =========================
 const facturaNode = xmlDoc.documentElement;
 
-facturaNode.removeAttribute('id');
-facturaNode.setAttribute('Id', 'comprobante');
-  
  const signedXml =
   new xadesjs.SignedXml();
 
@@ -254,13 +251,10 @@ await signedXml.Sign(
     references: [
       {
         hash: 'SHA-1',
-        transforms: [
-          'http://www.w3.org/2000/09/xmldsig#enveloped-signature'
-        ],
-        uri: '#comprobante',
+        transforms: ['http://www.w3.org/2000/09/xmldsig#enveloped-signature'],
+        uri: '',
       },
     ],
-
     x509: [certBase64],
   }
 );
@@ -311,14 +305,12 @@ function diagnosticarXml(xml) {
   const namespaces = limpio.match(/\sxmlns(?::\w+)?=/g) ?? [];
   const rootMatch = limpio.match(/<factura\s+([^>]*)>/i);
   const rootAttrs = rootMatch?.[1] ?? '';
-  const tieneIdComprobante = /\s(?:id|Id)=['"]comprobante['"]/.test(` ${rootAttrs}`);
   const ambiente = getTag(limpio, 'ambiente');
   const clave = getTag(limpio, 'claveAcceso');
   const ruc = getTag(limpio, 'ruc');
 
   const errores = [];
   if (validation !== true) errores.push(`XML mal formado: ${validation.err?.msg ?? 'error no especificado'}`);
-  if (!tieneIdComprobante) errores.push('La etiqueta <factura> debe tener id="comprobante" o Id="comprobante".');
   if (namespaces.length > 0) errores.push(`El XML sin firmar no debe traer namespaces (${namespaces.join(', ')}).`);
   if (clave && clave.length !== 49) errores.push('La clave de acceso debe tener 49 dígitos.');
   if (clave && ambiente && clave.slice(23, 24) !== ambiente) errores.push(`La clave tiene ambiente ${clave.slice(23, 24)} pero el XML ambiente ${ambiente}.`);
@@ -334,7 +326,6 @@ function diagnosticarXml(xml) {
       claveAcceso: clave ? `${clave.slice(0, 10)}...${clave.slice(-6)}` : null,
       secuencial: getTag(limpio, 'secuencial'),
       total: getTag(limpio, 'importeTotal'),
-      tieneIdComprobante,
       namespacesDetectados: namespaces.length,
     },
   };
