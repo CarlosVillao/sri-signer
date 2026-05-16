@@ -266,8 +266,7 @@ await signedXml.Sign(
   }
 );
 
-const xmlFirmado =
-  signedXml.toString();
+const xmlFirmado = new XMLSerializer().serializeToString(xmlDoc);
   
   fs.writeFileSync(
   './debug-firmado.xml',
