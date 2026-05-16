@@ -211,7 +211,7 @@ const key = await crypto.subtle.importKey(
   privateKeyBuffer,
   {
     name: 'RSASSA-PKCS1-v1_5',
-    hash: 'SHA-1',
+    hash: 'SHA-256',
   },
   false,
   ['sign']
@@ -233,15 +233,13 @@ const key = await crypto.subtle.importKey(
   // =========================
   // FIRMAR XAdES-BES
   // =========================
-const facturaNode = xmlDoc.documentElement;
-
  const signedXml =
   new xadesjs.SignedXml();
 
 await signedXml.Sign(
   {
     name: 'RSASSA-PKCS1-v1_5',
-    hash: { name: 'SHA-1' },
+    hash: { name: 'SHA-256' },
   },
   key,
   xmlDoc,
@@ -250,7 +248,7 @@ await signedXml.Sign(
 
     references: [
       {
-        hash: 'SHA-1',
+        hash: 'SHA-256',
         transforms: ['http://www.w3.org/2000/09/xmldsig#enveloped-signature'],
         uri: '',
       },
@@ -258,6 +256,8 @@ await signedXml.Sign(
     x509: [certBase64],
   }
 );
+  signedXml.XmlSignature.SignedInfo.SignatureMethod.Algorithm =
+  'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256';
 
 const xmlFirmado = signedXml.toString();
  
@@ -399,16 +399,17 @@ function validarCertificadoContraXml({ xml, certInfo }) {
 // =============== ENVÍO SOAP AL SRI ===============
 async function enviarRecepcion(xmlFirmado, ambiente) {
 
-  const xmlBase64 = Buffer.from(
-    xmlFirmado,
-    'utf8'
-  ).toString('base64');
+const xmlEscapado = xmlFirmado
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;');
 
-  const soap = `<?xml version="1.0" encoding="UTF-8"?>
+const soap = `<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ec="http://ec.gob.sri.ws.recepcion">
+  <soapenv:Header/>
   <soapenv:Body>
     <ec:validarComprobante>
-      <xml>${xmlBase64}</xml>
+      <xml>${xmlEscapado}</xml>
     </ec:validarComprobante>
   </soapenv:Body>
 </soapenv:Envelope>`;
@@ -422,9 +423,10 @@ async function enviarRecepcion(xmlFirmado, ambiente) {
   console.log('Enviando a recepcion SRI...');
 
   const httpsAgent = new https.Agent({
-    keepAlive: false,
-    rejectUnauthorized: true,
-  });
+  keepAlive: true,
+  rejectUnauthorized: false,
+  secureProtocol: 'TLS_method',
+});
 
   try {
 
