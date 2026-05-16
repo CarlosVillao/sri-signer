@@ -166,48 +166,43 @@ function firmarXML(xmlString, p12Buffer, password) {
   const doc = new XmlDomParser().parseFromString(xmlString);
 
   // Crear firmador
-  const sig = new SignedXml();
+const sig = new SignedXml();
 
-  sig.privateKey = privateKeyPem;
+sig.privateKey = privateKeyPem;
 
-  // Canonicalización compatible SRI
-  sig.canonicalizationAlgorithm =
-    'http://www.w3.org/TR/2001/REC-xml-c14n-20010315';
+sig.signatureAlgorithm =
+  'http://www.w3.org/2000/09/xmldsig#rsa-sha1';
 
-  // RSA SHA1 (el SRI todavía usa esto)
-  sig.signatureAlgorithm =
-    'http://www.w3.org/2000/09/xmldsig#rsa-sha1';
+sig.canonicalizationAlgorithm =
+  'http://www.w3.org/TR/2001/REC-xml-c14n-20010315';
 
-  // Referencia enveloped
-  sig.addReference({
-    xpath: "//*[local-name(.)='factura']",
-    transforms: [
-      'http://www.w3.org/2000/09/xmldsig#enveloped-signature'
-    ],
-    digestAlgorithm: 'http://www.w3.org/2000/09/xmldsig#sha1'
-  });
+sig.addReference({
+  xpath: "//*[local-name(.)='factura']",
+  transforms: [
+    'http://www.w3.org/2000/09/xmldsig#enveloped-signature',
+    'http://www.w3.org/TR/2001/REC-xml-c14n-20010315'
+  ],
+  digestAlgorithm:
+    'http://www.w3.org/2000/09/xmldsig#sha1'
+});
 
-  // KeyInfo CORRECTO
-  sig.keyInfoProvider = {
-    getKeyInfo() {
-      return `
-<X509Data>
-<X509Certificate>${certBase64}</X509Certificate>
-</X509Data>
+sig.keyInfoProvider = {
+  getKeyInfo() {
+    return `
+<ds:X509Data>
+<ds:X509Certificate>${certBase64}</ds:X509Certificate>
+</ds:X509Data>
 `;
-    }
-  };
+  }
+};
 
-  // Firmar
-  sig.computeSignature(xmlString, {
-    location: {
-      reference: "//*[local-name(.)='factura']",
-      action: 'append'
-    }
-  });
-
-  return sig.getSignedXml();
-}
+sig.computeSignature(xmlString, {
+  prefix: 'ds',
+  location: {
+    reference: "//*[local-name(.)='factura']",
+    action: 'append'
+  }
+});
 
 function getTag(xml, tagName) {
   return xml.match(new RegExp(`<${tagName}>(.*?)</${tagName}>`))?.[1]?.trim() ?? null;
