@@ -269,15 +269,23 @@ await signedXml.Sign(
 const xmlFirmado =
   signedXml.toString();
   
-  console.log(
-  'XML firmado preview:',
-  xmlFirmado.substring(0, 1500)
+  fs.writeFileSync(
+  './debug-firmado.xml',
+  xmlFirmado
+);
+
+console.log(
+  'Archivo debug-firmado.xml generado'
 );
 
   console.log(
     'XML firmado tamaño:',
     xmlFirmado.length
   );
+
+  console.log(
+  xmlFirmado.includes('X509Certificate')
+);
 
   return xmlFirmado;
 }
