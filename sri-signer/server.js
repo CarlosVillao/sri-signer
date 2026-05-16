@@ -6,8 +6,9 @@ import nodemailer from 'nodemailer';
 import forge from 'node-forge';
 import { XMLValidator } from 'fast-xml-parser';
 import { createHash } from 'crypto';
-import { signInvoiceXml } from 'ec-sri-invoice-signer';
 import fs from 'fs';
+import { SignedXml } from 'xml-crypto';
+import { DOMParser as XmlDomParser } from 'xmldom';
 
 const app = express();
 app.use(cors());
@@ -104,9 +105,108 @@ const newP12Asn1 = forge.pkcs12.toPkcs12Asn1(
 
 // =============== FIRMADO XAdES-BES ===============
 function firmarXML(xmlString, p12Buffer, password) {
-  // Firma XAdES-BES estricta para comprobantes SRI Ecuador.
-  // Si la contraseña desencriptada fuera incorrecta, esta función falla antes de enviar al SRI.
-  return signInvoiceXml(xmlString, p12Buffer, { pkcs12Password: password });
+
+  // Leer PKCS12
+  const p12Asn1 = forge.asn1.fromDer(p12Buffer.toString('binary'));
+
+  const p12 = forge.pkcs12.pkcs12FromAsn1(
+    p12Asn1,
+    false,
+    password
+  );
+
+  // Obtener llave privada
+  const keyBags = p12.getBags({
+    bagType: forge.pki.oids.pkcs8ShroudedKeyBag,
+  })[forge.pki.oids.pkcs8ShroudedKeyBag];
+
+  if (!keyBags || keyBags.length === 0) {
+    throw new Error('No se encontró llave privada en el .p12');
+  }
+
+  const privateKeyPem = forge.pki.privateKeyToPem(
+    keyBags[0].key
+  );
+
+  // Obtener certificado válido NO CA
+  const certBags = p12.getBags({
+    bagType: forge.pki.oids.certBag,
+  })[forge.pki.oids.certBag];
+
+  const now = new Date();
+
+  const cert = certBags
+    .map(b => b.cert)
+    .filter(c => {
+      const bc = c.getExtension?.('basicConstraints');
+      return !bc?.cA;
+    })
+    .filter(c =>
+      c.validity.notBefore <= now &&
+      c.validity.notAfter > now
+    )
+    .sort((a, b) =>
+      b.validity.notAfter - a.validity.notAfter
+    )[0];
+
+  if (!cert) {
+    throw new Error('No se encontró certificado válido');
+  }
+
+  // Certificado PEM
+  const certPem = forge.pki.certificateToPem(cert);
+
+  // Limpiar PEM
+  const certBase64 = certPem
+    .replace('-----BEGIN CERTIFICATE-----', '')
+    .replace('-----END CERTIFICATE-----', '')
+    .replace(/\r?\n|\r/g, '');
+
+  // Parse XML
+  const doc = new XmlDomParser().parseFromString(xmlString);
+
+  // Crear firmador
+  const sig = new SignedXml();
+
+  sig.privateKey = privateKeyPem;
+
+  // Canonicalización compatible SRI
+  sig.canonicalizationAlgorithm =
+    'http://www.w3.org/TR/2001/REC-xml-c14n-20010315';
+
+  // RSA SHA1 (el SRI todavía usa esto)
+  sig.signatureAlgorithm =
+    'http://www.w3.org/2000/09/xmldsig#rsa-sha1';
+
+  // Referencia enveloped
+  sig.addReference(
+    "//*[local-name(.)='factura']",
+    [
+      'http://www.w3.org/2000/09/xmldsig#enveloped-signature'
+    ],
+    'http://www.w3.org/2000/09/xmldsig#sha1'
+  );
+
+  // KeyInfo CORRECTO
+  sig.keyInfoProvider = {
+    getKeyInfo() {
+      return `
+<X509Data>
+<X509Certificate>${certBase64}</X509Certificate>
+</X509Data>
+`;
+    }
+  };
+
+  // Firmar
+  sig.computeSignature(xmlString, {
+    location: {
+      reference: "//*[local-name(.)='factura']",
+      action: 'append'
+    }
+  });
+
+  return sig.getSignedXml();
 }
 
 function getTag(xml, tagName) {
