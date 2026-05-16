@@ -241,7 +241,7 @@ if (
   );
 }
   
-  const signedXml =
+ const signedXml =
   new xadesjs.SignedXml();
 
 await signedXml.Sign(
@@ -262,7 +262,7 @@ await signedXml.Sign(
       },
     ],
 
-    signingCertificate: certBase64,
+    cert: certBase64,
   }
 );
 
