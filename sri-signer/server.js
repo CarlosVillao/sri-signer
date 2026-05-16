@@ -225,21 +225,18 @@ const key = await crypto.subtle.importKey(
       xmlString,
       'text/xml'
     );
+  xmlDoc.documentElement.setAttribute(
+  'xmlns:ds',
+  'http://www.w3.org/2000/09/xmldsig#'
+  );
 
   // =========================
   // FIRMAR XAdES-BES
   // =========================
 const facturaNode = xmlDoc.documentElement;
 
-if (
-  !facturaNode.getAttribute('Id') &&
-  !facturaNode.getAttribute('id')
-) {
-  facturaNode.setAttribute(
-    'Id',
-    'comprobante'
-  );
-}
+facturaNode.removeAttribute('id');
+facturaNode.setAttribute('Id', 'comprobante');
   
  const signedXml =
   new xadesjs.SignedXml();
@@ -257,16 +254,21 @@ await signedXml.Sign(
     references: [
       {
         hash: 'SHA-1',
-        transforms: ['enveloped'],
+        transforms: ['http://www.w3.org/2000/09/xmldsig#enveloped-signature'],
         uri: '#comprobante',
       },
     ],
 
-    cert: certBase64,
+    signingCertificate: certBase64,
   }
 );
 
 const xmlFirmado = new XMLSerializer().serializeToString(xmlDoc);
+ 
+  console.log(
+  'Tiene Signature:',
+  xmlFirmado.includes('Signature')
+);
   
   fs.writeFileSync(
   './debug-firmado.xml',
