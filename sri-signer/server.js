@@ -179,13 +179,13 @@ function firmarXML(xmlString, p12Buffer, password) {
     'http://www.w3.org/2000/09/xmldsig#rsa-sha1';
 
   // Referencia enveloped
-  sig.addReference(
-    "//*[local-name(.)='factura']",
-    [
+  sig.addReference({
+    xpath: "//*[local-name(.)='factura']",
+    transforms: [
       'http://www.w3.org/2000/09/xmldsig#enveloped-signature'
     ],
-    'http://www.w3.org/2000/09/xmldsig#sha1'
-  );
+    digestAlgorithm: 'http://www.w3.org/2000/09/xmldsig#sha1'
+  });
 
   // KeyInfo CORRECTO
   sig.keyInfoProvider = {
