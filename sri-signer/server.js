@@ -166,9 +166,11 @@ function firmarXML(xmlString, p12Buffer, password) {
   const doc = new XmlDomParser().parseFromString(xmlString);
 
   // Crear firmador
-const sig = new SignedXml();
-
-sig.privateKey = privateKeyPem;
+// Crear firmador
+const sig = new SignedXml({
+  privateKey: privateKeyPem,
+  publicCert: certPem,
+});
 
 sig.signatureAlgorithm =
   'http://www.w3.org/2000/09/xmldsig#rsa-sha1';
@@ -177,35 +179,57 @@ sig.canonicalizationAlgorithm =
   'http://www.w3.org/TR/2001/REC-xml-c14n-20010315';
 
 sig.addReference({
-  xpath: "//*[local-name(.)='factura']",
+  xpath: "//*[@id='comprobante']",
   transforms: [
     'http://www.w3.org/2000/09/xmldsig#enveloped-signature',
     'http://www.w3.org/TR/2001/REC-xml-c14n-20010315'
   ],
   digestAlgorithm:
-    'http://www.w3.org/2000/09/xmldsig#sha1'
+    'http://www.w3.org/2000/09/xmldsig#sha1',
+  uri: '#comprobante'
 });
 
+// KeyInfo correcto
 sig.keyInfoProvider = {
   getKeyInfo() {
     return `
-<ds:KeyInfo>
-  <ds:X509Data>
-    <ds:X509Certificate>${certBase64}</ds:X509Certificate>
-  </ds:X509Data>
-</ds:KeyInfo>
+<ds:X509Data>
+<ds:X509Certificate>${certBase64}</ds:X509Certificate>
+</ds:X509Data>
 `;
   }
 };
 
+// Forzar namespace ds
+sig.namespaceResolver = {
+  lookupNamespaceURI(prefix) {
+    if (prefix === 'ds') {
+      return 'http://www.w3.org/2000/09/xmldsig#';
+    }
+    return null;
+  }
+};
+
 sig.computeSignature(xmlString, {
+  prefix: 'ds',
+  attrs: {
+    Id: 'Signature'
+  },
   location: {
     reference: "//*[local-name(.)='factura']",
     action: 'append'
   }
 });
-  return sig.getSignedXml();
-}
+
+let firmado = sig.getSignedXml();
+
+// Forzar ds namespace
+firmado = firmado.replace(
+  '<ds:Signature>',
+  '<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">'
+);
+
+return firmado;
 
 function getTag(xml, tagName) {
   return xml.match(new RegExp(`<${tagName}>(.*?)</${tagName}>`))?.[1]?.trim() ?? null;
