@@ -10,7 +10,6 @@ import * as xadesjs from 'xadesjs';
 import { Crypto } from '@peculiar/webcrypto';
 import https from 'https';
 import { DOMParser, XMLSerializer } from 'xmldom';
-import * as xpath from 'xpath';
 
 const app = express();
 app.use(cors());
@@ -23,11 +22,6 @@ xadesjs.Application.setEngine(
   'NodeJS',
   new Crypto()
 );
-
-xadesjs.Application.setNodeDependencies({
-  DOMParser,
-  XMLSerializer,
-});
 
 // URLs SRI Ecuador
 const SRI_URLS = {
