@@ -189,15 +189,16 @@ sig.addReference({
 sig.keyInfoProvider = {
   getKeyInfo() {
     return `
-<ds:X509Data>
-<ds:X509Certificate>${certBase64}</ds:X509Certificate>
-</ds:X509Data>
+<ds:KeyInfo>
+  <ds:X509Data>
+    <ds:X509Certificate>${certBase64}</ds:X509Certificate>
+  </ds:X509Data>
+</ds:KeyInfo>
 `;
   }
 };
 
 sig.computeSignature(xmlString, {
-  prefix: 'ds',
   location: {
     reference: "//*[local-name(.)='factura']",
     action: 'append'
