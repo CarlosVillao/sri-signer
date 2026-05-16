@@ -244,7 +244,7 @@ facturaNode.setAttribute('Id', 'comprobante');
 await signedXml.Sign(
   {
     name: 'RSASSA-PKCS1-v1_5',
-    hash: 'SHA-1',
+    hash: { name: 'SHA-1' },
   },
   key,
   xmlDoc,
@@ -254,12 +254,14 @@ await signedXml.Sign(
     references: [
       {
         hash: 'SHA-1',
-        transforms: ['http://www.w3.org/2000/09/xmldsig#enveloped-signature'],
+        transforms: [
+          'http://www.w3.org/2000/09/xmldsig#enveloped-signature'
+        ],
         uri: '#comprobante',
       },
     ],
 
-    cert: certBase64,
+    x509: [certBase64],
   }
 );
 
