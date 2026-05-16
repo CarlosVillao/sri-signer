@@ -7,6 +7,7 @@ import forge from 'node-forge';
 import { XMLValidator } from 'fast-xml-parser';
 import { createHash } from 'crypto';
 import { signInvoiceXml } from 'ec-sri-invoice-signer';
+import fs from 'fs';
 
 const app = express();
 app.use(cors());
@@ -77,11 +78,23 @@ function prepararP12Vigente(p12Buffer, password) {
     else throw new Error('No se encontró la llave privada del certificado vigente dentro del .p12.');
   }
 
-  // Reconstruir un PKCS#12 con SOLO el certificado vigente + su llave.
-  const newP12Asn1 = forge.pkcs12.toPkcs12Asn1(privateKey, [certVigente], password, {
+  // Reconstruir un PKCS#12 con la cadena completa de certificados.
+// Algunos validadores del SRI necesitan también los certificados
+// intermedios y raíz para reconocer correctamente la firma digital.
+
+const cadenaCompleta = certBags
+  .map((b) => b.cert)
+  .filter(Boolean);
+
+const newP12Asn1 = forge.pkcs12.toPkcs12Asn1(
+  privateKey,
+  cadenaCompleta,
+  password,
+  {
     algorithm: '3des',
     friendlyName: 'firma-vigente',
-  });
+  }
+);
   const newP12Der = forge.asn1.toDer(newP12Asn1).getBytes();
   return {
     buffer: Buffer.from(newP12Der, 'binary'),
@@ -349,7 +362,15 @@ app.post('/procesar-factura', async (req, res) => {
       validTo: certVigente.validity.notAfter.toISOString().slice(0, 10),
     });
     const xmlFirmado = firmarXML(xmlLimpio, p12Vigente, certPassword);
-    console.log('XML firmado correctamente', { numeroFactura, contieneSignature: xmlFirmado.includes('<ds:Signature'), firmadoSha256: hashXml(xmlFirmado) });
+    console.log('XML firmado correctamente', {
+      numeroFactura,
+      contieneSignature: xmlFirmado.includes('<ds:Signature'),
+      tieneNamespaceDs: xmlFirmado.includes('xmlns:ds='),
+      tieneXades: xmlFirmado.includes('xades'),
+      tieneX509: xmlFirmado.includes('X509Certificate'),
+      firmadoSha256: hashXml(xmlFirmado)
+    });
+    fs.writeFileSync('./ultimo-firmado.xml', xmlFirmado);
 
     // 2. Enviar a recepción
     const recepcion = await enviarRecepcion(xmlFirmado, ambiente);
