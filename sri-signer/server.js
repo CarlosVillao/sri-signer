@@ -138,13 +138,19 @@ async function firmarXML(xmlString, p12Buffer, password) {
   }
 
   const cert = certBags
-    .map(b => b.cert)
-    .find(c => {
-      const bc =
-        c.getExtension?.('basicConstraints');
+  .map(b => b.cert)
+  .filter(c => c)
+  .filter(c => {
+    const bc =
+      c.getExtension?.('basicConstraints');
 
-      return !bc?.cA;
-    });
+    return !bc?.cA;
+  })
+  .sort(
+    (a, b) =>
+      b.validity.notAfter -
+      a.validity.notAfter
+  )[0];
 
   if (!cert) {
     throw new Error(
@@ -153,48 +159,64 @@ async function firmarXML(xmlString, p12Buffer, password) {
   }
 
   // =========================
-  // PEM
-  // =========================
+// CERTIFICADO
+// =========================
 
-  const privateKeyPem =
-    forge.pki.privateKeyToPem(
-      keyBags[0].key
-    );
-
-  const certPem =
+const certPem =
   forge.pki.certificateToPem(cert);
 
-  const certDer = forge.asn1
-    .toDer(forge.pki.certificateToAsn1(cert))
-    .getBytes();
+const certDer = forge.asn1
+  .toDer(
+    forge.pki.certificateToAsn1(cert)
+  )
+  .getBytes();
 
-  const certBuffer = Buffer.from(
-    certDer,
+const certBuffer = Buffer.from(
+  certDer,
+  'binary'
+);
+
+// =========================
+// EXPORTAR PKCS8 REAL
+// =========================
+
+const privateKeyAsn1 =
+  forge.pki.privateKeyToAsn1(
+    keyBags[0].key
+  );
+
+const privateKeyInfo =
+  forge.pki.wrapRsaPrivateKey(
+    privateKeyAsn1
+  );
+
+const privateKeyDer =
+  forge.asn1.toDer(
+    privateKeyInfo
+  ).getBytes();
+
+const privateKeyBuffer =
+  Buffer.from(
+    privateKeyDer,
     'binary'
   );
 
-  // =========================
-  // IMPORTAR LLAVE
-  // =========================
+// =========================
+// IMPORTAR LLAVE
+// =========================
 
-  const crypto = new Crypto();
+const crypto = new Crypto();
 
-  const key = await crypto.subtle.importKey(
-    'pkcs8',
-    Buffer.from(
-      privateKeyPem
-        .replace(/-----(BEGIN|END) PRIVATE KEY-----/g, '')
-        .replace(/\s+/g, ''),
-      'base64'
-    ),
-    {
-      name: 'RSASSA-PKCS1-v1_5',
-      hash: 'SHA-1'
-    },
-    false,
-    ['sign']
-  );
-
+const key = await crypto.subtle.importKey(
+  'pkcs8',
+  privateKeyBuffer,
+  {
+    name: 'RSASSA-PKCS1-v1_5',
+    hash: 'SHA-256',
+  },
+  false,
+  ['sign']
+);
   // =========================
   // PARSE XML
   // =========================
@@ -213,14 +235,14 @@ async function firmarXML(xmlString, p12Buffer, password) {
     await xadesjs.SignedXml.Sign(
       {
         name: 'RSASSA-PKCS1-v1_5',
-        hash: { name: 'SHA-1' },
+        hash: { name: 'SHA-256' },
       },
       key,
       xmlDoc,
       {
         references: [
           {
-            hash: 'SHA-1',
+            hash: 'SHA-256',
             transforms: [
               'enveloped'
             ],
