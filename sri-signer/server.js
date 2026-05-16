@@ -229,7 +229,7 @@ firmado = firmado.replace(
   '<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">'
 );
 
-  console.log('XML firmado tamaño:', xmlFirmado.length);
+  console.log('XML firmado tamaño:', firmado.length);
 return firmado;
 }  
 
