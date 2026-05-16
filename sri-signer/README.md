@@ -32,6 +32,14 @@ Respuesta exitosa:
 }
 ```
 
+El endpoint también valida antes de enviar al SRI que:
+
+- La contraseña abre correctamente el `.p12`.
+- El certificado está vigente.
+- El certificado pertenece al mismo RUC del XML.
+
+Si falla cualquiera de esas validaciones, responde `CERTIFICADO_INVALIDO` con el motivo exacto en vez de enviar una firma que el SRI rechazará como `FIRMA INVALIDA`.
+
 ## Despliegue en Railway — paso a paso
 
 ### 1. Sube esta carpeta a un repo NUEVO de GitHub
@@ -83,3 +91,4 @@ Vuelve al chat de Lovable y dame esa URL. Yo te abro el formulario para guardarl
 
 - El firmado XAdES-BES usa una librería compatible con la ficha técnica del SRI Ecuador y certificados `.p12`.
 - Las URLs SOAP del SRI cambian entre Pruebas (`celcer`) y Producción (`cel`) automáticamente según el `ambiente` que mandes.
+- En Railway, abre la URL raíz del servicio y confirma que responda `version: "1.0.1-cert-diagnostics"`; si sigue en `1.0.0`, Railway no desplegó este código.
