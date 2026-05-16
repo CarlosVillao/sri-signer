@@ -232,29 +232,29 @@ const key = await crypto.subtle.importKey(
   // =========================
 
   const signedXml =
-    await xadesjs.SignedXml.Sign(
+  new xadesjs.SignedXml();
+
+await signedXml.Sign(
+  {
+    name: 'RSASSA-PKCS1-v1_5',
+    hash: 'SHA-256',
+  },
+  key,
+  xmlDoc,
+  {
+    references: [
       {
-        name: 'RSASSA-PKCS1-v1_5',
-        hash: { name: 'SHA-256' },
+        hash: 'SHA-256',
+        transforms: ['enveloped'],
       },
-      key,
-      xmlDoc,
-      {
-        references: [
-          {
-            hash: 'SHA-256',
-            transforms: [
-              'enveloped'
-            ],
-          },
-        ],
+    ],
 
-        signingCertificate: certBuffer,
-      }
-    );
+    signingCertificate: certBuffer,
+  }
+);
 
-  const xmlFirmado =
-    signedXml.toString();
+const xmlFirmado =
+  signedXml.toString();
 
   console.log(
     'XML firmado tamaño:',
