@@ -203,6 +203,8 @@ sig.computeSignature(xmlString, {
     action: 'append'
   }
 });
+  return sig.getSignedXml();
+}
 
 function getTag(xml, tagName) {
   return xml.match(new RegExp(`<${tagName}>(.*?)</${tagName}>`))?.[1]?.trim() ?? null;
