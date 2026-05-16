@@ -165,15 +165,12 @@ async function firmarXML(xmlString, p12Buffer, password) {
 const certPem =
   forge.pki.certificateToPem(cert);
 
-const certDer = forge.asn1
-  .toDer(
-    forge.pki.certificateToAsn1(cert)
-  )
-  .getBytes();
-
-const certBuffer = Buffer.from(
-  certDer,
-  'binary'
+const certBase64 = forge.util.encode64(
+  forge.asn1
+    .toDer(
+      forge.pki.certificateToAsn1(cert)
+    )
+    .getBytes()
 );
 
 // =========================
@@ -249,7 +246,7 @@ await signedXml.Sign(
       },
     ],
 
-    signingCertificate: certBuffer,
+    signingCertificate: certBase64,
   }
 );
 
