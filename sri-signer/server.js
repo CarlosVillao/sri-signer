@@ -7,7 +7,7 @@ import forge from 'node-forge';
 import { XMLValidator } from 'fast-xml-parser';
 import { createHash } from 'crypto';
 import fs from 'fs';
-import { SignedXml } from 'xml-crypto';
+//import { SignedXml } from 'xml-crypto';
 import { DOMParser as XmlDomParser } from 'xmldom';
 import https from 'https';
 
