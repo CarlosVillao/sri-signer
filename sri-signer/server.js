@@ -7,11 +7,8 @@ import { XMLValidator } from 'fast-xml-parser';
 import { createHash } from 'crypto';
 import fs from 'fs';
 import { DOMParser } from '@xmldom/xmldom';
-import signer from 'ec-sri-invoice-signer';
-
-const {
-  signInvoiceXml
-} = signer;
+import * as xadesjs from 'xadesjs';
+import { Crypto } from '@peculiar/webcrypto';
 
 const app = express();
 app.use(cors());
@@ -19,6 +16,11 @@ app.use(express.json({ limit: '10mb' }));
 
 const PORT = process.env.PORT || 3000;
 const SERVICE_VERSION = '1.0.3-sri-xml-diagnostics';
+
+xadesjs.Application.setEngine(
+  "NodeJS",
+  new Crypto()
+);
 
 // URLs SRI Ecuador
 const SRI_URLS = {
@@ -38,82 +40,81 @@ const SRI_URLS = {
 // ec-sri-invoice-signer toma siempre certBag[0], que suele ser el vencido.
 // Esta función reconstruye un .p12 limpio con SOLO el certificado vigente y su
 // llave privada correspondiente, para que el firmador use el correcto.
-function prepararP12Vigente(p12Buffer, password) {
-  const p12Asn1 = forge.asn1.fromDer(p12Buffer.toString('binary'));
-  const p12 = forge.pkcs12.pkcs12FromAsn1(p12Asn1, false, password);
 
-  const certBags = p12.getBags({ bagType: forge.pki.oids.certBag })[forge.pki.oids.certBag] || [];
-  const keyBags = p12.getBags({ bagType: forge.pki.oids.pkcs8ShroudedKeyBag })[forge.pki.oids.pkcs8ShroudedKeyBag] || [];
-
-  const now = new Date();
-  // Filtrar solo certificados de firma vigentes (no CAs intermedias/raíz, no vencidos).
-  const candidatos = certBags
-    .map((b) => b.cert)
-    .filter((c) => c && c.validity.notBefore <= now && c.validity.notAfter > now)
-    .filter((c) => {
-      // Excluir certificados de CA (Authority): los certificados de firma personal
-      // tienen el shortName "CN" con el nombre de la persona y NO son CA.
-      const bc = c.getExtension && c.getExtension('basicConstraints');
-      return !(bc && bc.cA);
-    })
-    // Más reciente primero
-    .sort((a, b) => b.validity.notAfter - a.validity.notAfter);
-
-  if (candidatos.length === 0) {
-    throw new Error('El .p12 no contiene ningún certificado de firma vigente. Todos están vencidos o son sólo CAs.');
-  }
-  const certVigente = candidatos[0];
-
-  // Buscar la llave privada que coincida con la clave pública de ese certificado.
-  let privateKey = null;
-  for (const kb of keyBags) {
-    if (!kb.key) continue;
-    try {
-      const pubFromKey = forge.pki.setRsaPublicKey(kb.key.n, kb.key.e);
-      if (forge.pki.publicKeyToPem(pubFromKey) === forge.pki.publicKeyToPem(certVigente.publicKey)) {
-        privateKey = kb.key;
-        break;
-      }
-    } catch (_) { /* ignore */ }
-  }
-  if (!privateKey) {
-    // Fallback: si solo hay una llave, asumirla
-    if (keyBags.length === 1 && keyBags[0].key) privateKey = keyBags[0].key;
-    else throw new Error('No se encontró la llave privada del certificado vigente dentro del .p12.');
-  }
-
-  // Reconstruir un PKCS#12 con la cadena completa de certificados.
-// Algunos validadores del SRI necesitan también los certificados
-// intermedios y raíz para reconocer correctamente la firma digital.
-
-const cadenaCompleta = certBags
-  .map((b) => b.cert)
-  .filter(Boolean);
-
-const newP12Asn1 = forge.pkcs12.toPkcs12Asn1(
-  privateKey,
-  cadenaCompleta,
-  password,
-  {
-    algorithm: '3des',
-    friendlyName: 'firma-vigente',
-  }
-);
-  const newP12Der = forge.asn1.toDer(newP12Asn1).getBytes();
-  return {
-    buffer: Buffer.from(newP12Der, 'binary'),
-    certVigente,
-  };
-}
 
 // =============== FIRMADO XAdES-BES REAL ===============
 async function firmarXML(xmlString, p12Buffer, password) {
 
-  const xmlFirmado = signInvoiceXml(
-    xmlString,
-    p12Buffer,
+  const p12Asn1 = forge.asn1.fromDer(
+    p12Buffer.toString('binary')
+  );
+
+  const p12 = forge.pkcs12.pkcs12FromAsn1(
+    p12Asn1,
+    false,
     password
   );
+
+  const keyObj =
+    p12.getBags({
+      bagType: forge.pki.oids.pkcs8ShroudedKeyBag
+    })[
+      forge.pki.oids.pkcs8ShroudedKeyBag
+    ][0];
+
+  const certObj =
+    p12.getBags({
+      bagType: forge.pki.oids.certBag
+    })[
+      forge.pki.oids.certBag
+    ][0];
+
+  const crypto = new Crypto();
+
+  const key = await crypto.subtle.importKey(
+    "pkcs8",
+    Buffer.from(
+      forge.asn1.toDer(
+        forge.pki.privateKeyToAsn1(keyObj.key)
+      ).getBytes(),
+      "binary"
+    ),
+    {
+      name: "RSASSA-PKCS1-v1_5",
+      hash: "SHA-256"
+    },
+    false,
+    ["sign"]
+  );
+
+  const xmlDoc = new DOMParser().parseFromString(
+    xmlString,
+    'text/xml'
+  );
+
+  const signedXml = new xadesjs.SignedXml(xmlDoc);
+
+  await signedXml.Sign(
+    {
+      name: "RSASSA-PKCS1-v1_5",
+      hash: { name: "SHA-256" }
+    },
+    key,
+    xmlDoc,
+    {
+      references: [
+        {
+          hash: "SHA-256",
+          transforms: [
+            "enveloped"
+          ]
+        }
+      ],
+      signingCertificate: certObj.cert
+    }
+  );
+
+  const xmlFirmado = signedXml.toString();
 
   fs.writeFileSync(
     './debug-firmado.xml',
@@ -442,17 +443,13 @@ app.post('/procesar-factura', async (req, res) => {
     }
 
     // 1. Firmar (usar p12 saneado: SOLO el certificado vigente + su llave)
-    const { certVigente } = prepararP12Vigente(
-      p12Buffer,
-      certPassword
-    );
-    
+
     console.log('Certificado seleccionado para firmar', {
-      numeroFactura,
-      totalCertsEnP12: certInfo.totalCertsEnP12,
-      validFrom: certVigente.validity.notBefore.toISOString().slice(0, 10),
-      validTo: certVigente.validity.notAfter.toISOString().slice(0, 10),
-    });
+  numeroFactura,
+  totalCertsEnP12: certInfo.totalCertsEnP12,
+  validFrom: certInfo.validFrom.toISOString().slice(0, 10),
+  validTo: certInfo.validTo.toISOString().slice(0, 10),
+});
     
     const xmlFirmado = await firmarXML(xmlLimpio, p12Buffer, certPassword);
     if (!xmlFirmado.includes('<ds:Signature')) {
