@@ -6,7 +6,6 @@ import forge from 'node-forge';
 import { XMLValidator } from 'fast-xml-parser';
 import { createHash } from 'crypto';
 import fs from 'fs';
-import { XadesBesSigner } from 'xades-bes-sri';
 import { DOMParser } from '@xmldom/xmldom';
 
 const app = express();
@@ -104,8 +103,6 @@ const newP12Asn1 = forge.pkcs12.toPkcs12Asn1(
 
 // =============== FIRMADO XAdES-BES REAL ===============
 async function firmarXML(xmlString, p12Buffer, password) {
-
-  const signer = new XadesBesSigner();
 
   const xmlFirmado = await signer.sign(
     xmlString,
