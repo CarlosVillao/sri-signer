@@ -5,242 +5,567 @@ import nodemailer from 'nodemailer';
 import forge from 'node-forge';
 import { XMLValidator } from 'fast-xml-parser';
 import { createHash } from 'crypto';
-import fs from 'fs';
 import { DOMParser } from '@xmldom/xmldom';
 import * as xadesjs from 'xadesjs';
-import { Crypto } from '@peculiar/webcrypto'; 
+import { Crypto } from '@peculiar/webcrypto';
 
 const app = express();
+
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
 const PORT = process.env.PORT || 3000;
-const SERVICE_VERSION = '1.0.3-sri-xml-diagnostics';
+const SERVICE_VERSION = '1.0.6-p12-selected-cert';
 
 xadesjs.Application.setEngine(
-  "NodeJS",
+  'NodeJS',
   new Crypto()
 );
 
 // URLs SRI Ecuador
 const SRI_URLS = {
-  '1': { // Pruebas
-    recepcion: 'https://celcer.sri.gob.ec/comprobantes-electronicos-ws/RecepcionComprobantesOffline?wsdl',
-    autorizacion: 'https://celcer.sri.gob.ec/comprobantes-electronicos-ws/AutorizacionComprobantesOffline?wsdl',
+  '1': {
+    recepcion:
+      'https://celcer.sri.gob.ec/comprobantes-electronicos-ws/RecepcionComprobantesOffline?wsdl',
+    autorizacion:
+      'https://celcer.sri.gob.ec/comprobantes-electronicos-ws/AutorizacionComprobantesOffline?wsdl',
   },
-  '2': { // Producción
-    recepcion: 'https://cel.sri.gob.ec/comprobantes-electronicos-ws/RecepcionComprobantesOffline?wsdl',
-    autorizacion: 'https://cel.sri.gob.ec/comprobantes-electronicos-ws/AutorizacionComprobantesOffline?wsdl',
+  '2': {
+    recepcion:
+      'https://cel.sri.gob.ec/comprobantes-electronicos-ws/RecepcionComprobantesOffline?wsdl',
+    autorizacion:
+      'https://cel.sri.gob.ec/comprobantes-electronicos-ws/AutorizacionComprobantesOffline?wsdl',
   },
 };
 
-// =============== SELECCIÓN DE CERTIFICADO VIGENTE ===============
-// Algunos .p12 (como los renovados por el Banco Central del Ecuador) contienen
-// MÁS DE UN certificado de firma: el viejo vencido y el nuevo vigente. La librería
-// ec-sri-invoice-signer toma siempre certBag[0], que suele ser el vencido.
-// Esta función reconstruye un .p12 limpio con SOLO el certificado vigente y su
-// llave privada correspondiente, para que el firmador use el correcto.
+// ======================================================
+// PKCS12 HELPERS
+// ======================================================
 
+function getPkcs12(p12Buffer, password) {
+  try {
+    const p12Asn1 = forge.asn1.fromDer(
+      p12Buffer.toString('binary')
+    );
 
-// =============== FIRMADO XAdES-BES REAL ===============
-async function firmarXML(xmlString, p12Buffer, password) {
+    return forge.pkcs12.pkcs12FromAsn1(
+      p12Asn1,
+      false,
+      password
+    );
+  } catch (error) {
+    if (
+      String(error?.message ?? '').includes(
+        'Invalid password'
+      )
+    ) {
+      throw new Error(
+        'No se pudo abrir el archivo .p12. Verifica que la contraseña sea correcta.'
+      );
+    }
 
-  const p12Asn1 = forge.asn1.fromDer(
-    p12Buffer.toString('binary')
+    throw new Error(
+      `No se pudo leer el archivo .p12: ${error.message}`
+    );
+  }
+}
+
+function isCertificateAuthority(cert) {
+  const basicConstraints =
+    cert.getExtension &&
+    cert.getExtension('basicConstraints');
+
+  return Boolean(
+    basicConstraints &&
+      basicConstraints.cA
   );
+}
 
-  const p12 = forge.pkcs12.pkcs12FromAsn1(
-    p12Asn1,
-    false,
+function rsaPrivateKeyMatchesCertificate(
+  privateKey,
+  cert
+) {
+  return Boolean(
+    privateKey?.n &&
+      privateKey?.e &&
+      cert?.publicKey?.n &&
+      cert?.publicKey?.e &&
+      privateKey.n.compareTo(
+        cert.publicKey.n
+      ) === 0 &&
+      privateKey.e.compareTo(
+        cert.publicKey.e
+      ) === 0
+  );
+}
+
+function certToBase64Der(cert) {
+  return Buffer.from(
+    forge.asn1
+      .toDer(
+        forge.pki.certificateToAsn1(cert)
+      )
+      .getBytes(),
+    'binary'
+  ).toString('base64');
+}
+
+function privateKeyToPkcs8Der(privateKey) {
+  const privateKeyAsn1 =
+    forge.pki.privateKeyToAsn1(
+      privateKey
+    );
+
+  const privateKeyInfo =
+    forge.pki.wrapRsaPrivateKey(
+      privateKeyAsn1
+    );
+
+  return Buffer.from(
+    forge.asn1
+      .toDer(privateKeyInfo)
+      .getBytes(),
+    'binary'
+  );
+}
+
+function getCertificateDescription(cert) {
+  return cert.subject.attributes
+    .map(
+      (a) =>
+        `${a.shortName || a.name}=${a.value}`
+    )
+    .join(' | ');
+}
+
+function getCertificateValues(cert) {
+  const subjectValues =
+    cert.subject.attributes.map((a) =>
+      String(a.value ?? '')
+    );
+
+  const extensionValues = (
+    cert.extensions || []
+  ).flatMap((ext) => [
+    String(ext.value ?? ''),
+    ...(
+      ext.altNames || []
+    ).map((alt) =>
+      String(alt.value ?? '')
+    ),
+  ]);
+
+  return [
+    ...subjectValues,
+    ...extensionValues,
+  ];
+}
+
+function extraerMaterialFirma(
+  p12Buffer,
+  password
+) {
+  const p12 = getPkcs12(
+    p12Buffer,
     password
   );
 
-  const keyObj =
+  const certBags =
     p12.getBags({
-      bagType: forge.pki.oids.pkcs8ShroudedKeyBag
-    })[
-      forge.pki.oids.pkcs8ShroudedKeyBag
-    ][0];
-
-  const certObj =
-    p12.getBags({
-      bagType: forge.pki.oids.certBag
+      bagType:
+        forge.pki.oids.certBag,
     })[
       forge.pki.oids.certBag
-    ][0];
+    ] || [];
 
+  const shroudedKeyBags =
+    p12.getBags({
+      bagType:
+        forge.pki.oids
+          .pkcs8ShroudedKeyBag,
+    })[
+      forge.pki.oids
+        .pkcs8ShroudedKeyBag
+    ] || [];
+
+  const keyBags =
+    p12.getBags({
+      bagType:
+        forge.pki.oids.keyBag,
+    })[
+      forge.pki.oids.keyBag
+    ] || [];
+
+  const privateKeys = [
+    ...shroudedKeyBags,
+    ...keyBags,
+  ]
+    .map((bag) => bag.key)
+    .filter(Boolean);
+
+  const now = new Date();
+
+  const candidates = certBags
+    .map((bag, index) => ({
+      cert: bag.cert,
+      index,
+    }))
+    .filter(({ cert }) => cert)
+    .filter(
+      ({ cert }) =>
+        !isCertificateAuthority(cert)
+    )
+    .map(({ cert, index }) => ({
+      cert,
+      certIndex: index,
+      privateKey: privateKeys.find(
+        (key) =>
+          rsaPrivateKeyMatchesCertificate(
+            key,
+            cert
+          )
+      ),
+      isCurrentlyValid:
+        cert.validity.notBefore <= now &&
+        cert.validity.notAfter > now,
+    }))
+    .filter(
+      ({ privateKey }) => privateKey
+    )
+    .sort((a, b) => {
+      if (
+        a.isCurrentlyValid !==
+        b.isCurrentlyValid
+      ) {
+        return a.isCurrentlyValid
+          ? -1
+          : 1;
+      }
+
+      return (
+        b.cert.validity.notAfter -
+        a.cert.validity.notAfter
+      );
+    });
+
+  const selected = candidates[0];
+
+  if (!selected) {
+    throw new Error(
+      'El archivo .p12 no contiene un certificado válido con llave privada compatible.'
+    );
+  }
+
+  const {
+    cert,
+    privateKey,
+    certIndex,
+    isCurrentlyValid,
+  } = selected;
+
+  const subject =
+    getCertificateDescription(cert);
+
+  const issuer =
+    cert.issuer.attributes
+      .map(
+        (a) =>
+          `${a.shortName || a.name}=${a.value}`
+      )
+      .join(' | ');
+
+  return {
+    cert,
+    privateKey,
+    certDerBase64:
+      certToBase64Der(cert),
+    certIndex,
+    subject,
+    issuer,
+    values:
+      getCertificateValues(cert),
+    validFrom:
+      cert.validity.notBefore,
+    validTo:
+      cert.validity.notAfter,
+    isCurrentlyValid,
+    totalCertsEnP12:
+      certBags.length,
+    totalLlavesEnP12:
+      privateKeys.length,
+    nowUtc: now.toISOString(),
+  };
+}
+
+// ======================================================
+// FIRMA XAdES-BES
+// ======================================================
+
+async function firmarXML(
+  xmlString,
+  materialFirma
+) {
   const crypto = new Crypto();
 
-  const key = await crypto.subtle.importKey(
-    "pkcs8",
-    Buffer.from(
-      forge.asn1.toDer(
-        forge.pki.privateKeyToAsn1(keyObj.key)
-      ).getBytes(),
-      "binary"
-    ),
-    {
-      name: "RSASSA-PKCS1-v1_5",
-      hash: "SHA-256"
-    },
-    false,
-    ["sign"]
-  );
+  const key =
+    await crypto.subtle.importKey(
+      'pkcs8',
+      privateKeyToPkcs8Der(
+        materialFirma.privateKey
+      ),
+      {
+        name: 'RSASSA-PKCS1-v1_5',
+        hash: 'SHA-256',
+      },
+      false,
+      ['sign']
+    );
 
-  const xmlDoc = new DOMParser().parseFromString(
-    xmlString,
-    'text/xml'
-  );
+  const xmlDoc =
+    new DOMParser().parseFromString(
+      xmlString,
+      'text/xml'
+    );
 
-  const signedXml = new xadesjs.SignedXml(xmlDoc);
+  const signedXml =
+    new xadesjs.SignedXml(xmlDoc);
 
   await signedXml.Sign(
     {
-      name: "RSASSA-PKCS1-v1_5",
-      hash: { name: "SHA-256" }
+      name: 'RSASSA-PKCS1-v1_5',
+      hash: {
+        name: 'SHA-256',
+      },
     },
     key,
     xmlDoc,
     {
       references: [
         {
-          hash: "SHA-256",
+          hash: 'SHA-256',
           transforms: [
-            "enveloped"
-          ]
-        }
+            'enveloped',
+          ],
+        },
       ],
-      signingCertificate: certObj.cert
+      signingCertificate:
+        materialFirma.certDerBase64,
     }
   );
 
-  const xmlFirmado = signedXml.toString();
-
-  fs.writeFileSync(
-    './debug-firmado.xml',
-    xmlFirmado
-  );
-
-  return xmlFirmado;
+  return signedXml.toString();
 }
 
+// ======================================================
+// XML HELPERS
+// ======================================================
+
 function getTag(xml, tagName) {
-  return xml.match(new RegExp(`<${tagName}>(.*?)</${tagName}>`))?.[1]?.trim() ?? null;
+  return (
+    xml.match(
+      new RegExp(
+        `<${tagName}>(.*?)</${tagName}>`
+      )
+    )?.[1]?.trim() ?? null
+  );
 }
 
 function hashXml(xml) {
-  return createHash('sha256').update(xml, 'utf8').digest('hex');
+  return createHash('sha256')
+    .update(xml, 'utf8')
+    .digest('hex');
 }
 
 function limpiarXml(xml) {
-  return String(xml ?? '').replace(/^\uFEFF/, '').trim();
+  return String(xml ?? '')
+    .replace(/^\uFEFF/, '')
+    .trim();
 }
 
 function diagnosticarXml(xml) {
   const limpio = limpiarXml(xml);
-  const validation = XMLValidator.validate(limpio);
-  const namespaces = limpio.match(/\sxmlns(?::\w+)?=/g) ?? [];
-  const ambiente = getTag(limpio, 'ambiente');
-  const clave = getTag(limpio, 'claveAcceso');
-  const ruc = getTag(limpio, 'ruc');
+
+  const validation =
+    XMLValidator.validate(limpio);
+
+  const namespaces =
+    limpio.match(
+      /\sxmlns(?::\w+)?=/g
+    ) ?? [];
+
+  const ambiente =
+    getTag(limpio, 'ambiente');
+
+  const clave =
+    getTag(
+      limpio,
+      'claveAcceso'
+    );
+
+  const ruc =
+    getTag(limpio, 'ruc');
 
   const errores = [];
-  if (validation !== true) errores.push(`XML mal formado: ${validation.err?.msg ?? 'error no especificado'}`);
-  if (namespaces.length > 0) errores.push(`El XML sin firmar no debe traer namespaces (${namespaces.join(', ')}).`);
-  if (clave && clave.length !== 49) errores.push('La clave de acceso debe tener 49 dígitos.');
-  if (clave && ambiente && clave.slice(23, 24) !== ambiente) errores.push(`La clave tiene ambiente ${clave.slice(23, 24)} pero el XML ambiente ${ambiente}.`);
+
+  if (validation !== true) {
+    errores.push(
+      `XML mal formado: ${
+        validation.err?.msg ??
+        'error no especificado'
+      }`
+    );
+  }
+
+  if (namespaces.length > 0) {
+    errores.push(
+      `El XML sin firmar no debe traer namespaces (${namespaces.join(
+        ', '
+      )}).`
+    );
+  }
+
+  if (
+    clave &&
+    clave.length !== 49
+  ) {
+    errores.push(
+      'La clave de acceso debe tener 49 dígitos.'
+    );
+  }
+
+  if (
+    clave &&
+    ambiente &&
+    clave.slice(23, 24) !== ambiente
+  ) {
+    errores.push(
+      `La clave tiene ambiente ${clave.slice(
+        23,
+        24
+      )} pero el XML ambiente ${ambiente}.`
+    );
+  }
 
   return {
     ok: errores.length === 0,
     errores,
     resumen: {
       sha256: hashXml(limpio),
-      longitud: Buffer.byteLength(limpio, 'utf8'),
+      longitud:
+        Buffer.byteLength(
+          limpio,
+          'utf8'
+        ),
       ruc,
       ambiente,
-      claveAcceso: clave ? `${clave.slice(0, 10)}...${clave.slice(-6)}` : null,
-      secuencial: getTag(limpio, 'secuencial'),
-      total: getTag(limpio, 'importeTotal'),
-      namespacesDetectados: namespaces.length,
+      claveAcceso: clave
+        ? `${clave.slice(
+            0,
+            10
+          )}...${clave.slice(-6)}`
+        : null,
+      secuencial: getTag(
+        limpio,
+        'secuencial'
+      ),
+      total: getTag(
+        limpio,
+        'importeTotal'
+      ),
+      namespacesDetectados:
+        namespaces.length,
     },
   };
 }
 
-function extraerCertificado(p12Buffer, password) {
-  const p12Asn1 = forge.asn1.fromDer(p12Buffer.toString('binary'));
-  const p12 = forge.pkcs12.pkcs12FromAsn1(p12Asn1, false, password);
-  const certBags = p12.getBags({ bagType: forge.pki.oids.certBag })[forge.pki.oids.certBag] || [];
-  const now = new Date();
-  // Elegir el mismo certificado que usaremos para firmar (vigente y no CA), no certBag[0].
-  const cert = certBags
-    .map((b) => b.cert)
-    .filter((c) => c)
-    .filter((c) => {
-      const bc = c.getExtension && c.getExtension('basicConstraints');
-      return !(bc && bc.cA);
-    })
-    .filter((c) => c.validity.notBefore <= now && c.validity.notAfter > now)
-    .sort((a, b) => b.validity.notAfter - a.validity.notAfter)[0]
-    || certBags[0]?.cert;
-  if (!cert) throw new Error('El archivo .p12 no contiene un certificado X509 válido.');
-
-  const subject = cert.subject.attributes.map((a) => `${a.shortName || a.name}=${a.value}`).join(' | ');
-  const issuer = cert.issuer.attributes.map((a) => `${a.shortName || a.name}=${a.value}`).join(' | ');
-  const subjectValues = cert.subject.attributes.map((a) => String(a.value ?? ''));
-  const extensionValues = (cert.extensions || []).flatMap((ext) => [
-    String(ext.value ?? ''),
-    ...((ext.altNames || []).map((alt) => String(alt.value ?? ''))),
-  ]);
-
-  return {
-    subject,
-    issuer,
-    values: [...subjectValues, ...extensionValues],
-    validFrom: cert.validity.notBefore,
-    validTo: cert.validity.notAfter,
-    totalCertsEnP12: certBags.length,
-    nowUtc: now.toISOString(),
-  };
+function extraerCertificado(
+  p12Buffer,
+  password
+) {
+  return extraerMaterialFirma(
+    p12Buffer,
+    password
+  );
 }
 
-function validarCertificadoContraXml({ xml, certInfo }) {
-  const rucXml = getTag(xml, 'ruc');
-  const ambienteXml = getTag(xml, 'ambiente');
-  const claveXml = getTag(xml, 'claveAcceso');
+function validarCertificadoContraXml({
+  xml,
+  certInfo,
+}) {
+  const rucXml =
+    getTag(xml, 'ruc');
+
+  const ambienteXml =
+    getTag(xml, 'ambiente');
+
+  const claveXml =
+    getTag(
+      xml,
+      'claveAcceso'
+    );
+
   const now = new Date();
 
   if (certInfo.validTo < now) {
-    return `El certificado .p12 está vencido desde ${certInfo.validTo.toISOString().slice(0, 10)}. Sube una firma electrónica vigente.`;
+    return `El certificado .p12 está vencido desde ${certInfo.validTo
+      .toISOString()
+      .slice(0, 10)}.`;
   }
 
   if (certInfo.validFrom > now) {
-    return `El certificado .p12 todavía no está vigente. Inicia el ${certInfo.validFrom.toISOString().slice(0, 10)}.`;
+    return `El certificado .p12 todavía no está vigente.`;
   }
 
   if (rucXml) {
-    const cedulaDelRuc = rucXml.slice(0, 10);
-    const perteneceAlRuc = certInfo.values.some((value) => value.includes(rucXml) || value.includes(cedulaDelRuc));
+    const cedulaDelRuc =
+      rucXml.slice(0, 10);
+
+    const perteneceAlRuc =
+      certInfo.values.some(
+        (value) =>
+          value.includes(rucXml) ||
+          value.includes(
+            cedulaDelRuc
+          )
+      );
+
     if (!perteneceAlRuc) {
-      return `El certificado .p12 no corresponde al RUC ${rucXml}. Certificado detectado: ${certInfo.subject}. Sube la firma emitida para ese RUC.`;
+      return `El certificado .p12 no corresponde al RUC ${rucXml}.`;
     }
   }
 
-  if (claveXml?.length === 49 && ambienteXml && claveXml.slice(23, 24) !== ambienteXml) {
-    return `La clave de acceso tiene ambiente ${claveXml.slice(23, 24)}, pero el XML tiene ambiente ${ambienteXml}.`;
+  if (
+    claveXml?.length === 49 &&
+    ambienteXml &&
+    claveXml.slice(23, 24) !==
+      ambienteXml
+  ) {
+    return `La clave de acceso tiene ambiente ${claveXml.slice(
+      23,
+      24
+    )}, pero el XML tiene ambiente ${ambienteXml}.`;
   }
 
   return null;
 }
 
-// =============== ENVÍO SOAP AL SRI ===============
-async function enviarRecepcion(xmlFirmado, ambiente) {
+// ======================================================
+// ENVÍO SOAP AL SRI
+// ======================================================
 
-const xmlSinDeclaracion = xmlFirmado.replace(
-  /<\?xml.*?\?>/,
-  ''
-).trim();
-  
-const soap = `<?xml version="1.0" encoding="UTF-8"?>
+async function enviarRecepcion(
+  xmlFirmado,
+  ambiente
+) {
+  const xmlSinDeclaracion =
+    xmlFirmado
+      .replace(
+        /<\?xml.*?\?>/,
+        ''
+      )
+      .trim();
+
+  const soap = `<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ec="http://ec.gob.sri.ws.recepcion">
   <soapenv:Header/>
   <soapenv:Body>
@@ -251,32 +576,25 @@ const soap = `<?xml version="1.0" encoding="UTF-8"?>
 </soapenv:Envelope>`;
 
   const url =
-    SRI_URLS[ambiente].recepcion.replace(
+    SRI_URLS[
+      ambiente
+    ].recepcion.replace(
       '?wsdl',
       ''
     );
 
-  console.log('Enviando a recepcion SRI...');
-
   try {
-
     const res = await axios.post(
       url,
       soap,
       {
         headers: {
-          'Content-Type': 'text/xml; charset=utf-8',
+          'Content-Type':
+            'text/xml; charset=utf-8',
           SOAPAction: '',
-      },
-
+        },
         timeout: 60000,
-        maxBodyLength: Infinity,
-        maxContentLength: Infinity,
       }
-    );
-
-    console.log(
-      'SRI recepcion respondio'
     );
 
     const estadoMatch =
@@ -288,63 +606,81 @@ const soap = `<?xml version="1.0" encoding="UTF-8"?>
       estado:
         estadoMatch?.[1] ??
         'DESCONOCIDO',
-
       raw: res.data,
-
       mensajes:
-        extraerMensajesSri(res.data)
+        extraerMensajesSri(
+          res.data
+        ),
     };
-
   } catch (error) {
-
-    console.error(
-      'ERROR SRI RECEPCION:',
-      error.code,
-      error.message
-    );
-
-    // SI EL SRI RESPONDIÓ CON XML DE ERROR
-    if (error.response?.data) {
-
-      console.log('SOAP ERROR DEL SRI:');
-      console.log(error.response.data);
-
-      return {
-        estado: 'DEVUELTA',
-        raw: error.response.data,
-        mensajes: extraerMensajesSri(error.response.data)
-      };
-    }
-
-    // SI FUE ERROR DE RED/TLS
     return {
       estado: 'ERROR_RED',
       raw: error.message,
       mensajes: [
         {
-          identificador: error.code || 'NETWORK',
-          mensaje: error.message,
-          tipo: 'ERROR'
-        }
-      ]
+          identificador:
+            error.code ||
+            'NETWORK',
+          mensaje:
+            error.message,
+          tipo: 'ERROR',
+        },
+      ],
     };
   }
 }
 
-function extraerMensajesSri(rawXml) {
-  const doc = new DOMParser().parseFromString(rawXml, 'text/xml');
-  const nodes = Array.from(doc.getElementsByTagName('mensaje'));
+function extraerMensajesSri(
+  rawXml
+) {
+  const doc =
+    new DOMParser().parseFromString(
+      rawXml,
+      'text/xml'
+    );
+
+  const nodes = Array.from(
+    doc.getElementsByTagName(
+      'mensaje'
+    )
+  );
+
   return nodes
     .map((node) => ({
-      identificador: node.getElementsByTagName('identificador')[0]?.textContent ?? null,
-      mensaje: node.getElementsByTagName('mensaje')[0]?.textContent ?? node.textContent?.trim() ?? null,
-      informacionAdicional: node.getElementsByTagName('informacionAdicional')[0]?.textContent ?? null,
-      tipo: node.getElementsByTagName('tipo')[0]?.textContent ?? null,
+      identificador:
+        node.getElementsByTagName(
+          'identificador'
+        )[0]?.textContent ??
+        null,
+      mensaje:
+        node.getElementsByTagName(
+          'mensaje'
+        )[0]?.textContent ??
+        null,
+      informacionAdicional:
+        node.getElementsByTagName(
+          'informacionAdicional'
+        )[0]?.textContent ??
+        null,
+      tipo:
+        node.getElementsByTagName(
+          'tipo'
+        )[0]?.textContent ??
+        null,
     }))
-    .filter((m) => m.identificador || m.mensaje || m.informacionAdicional || m.tipo);
+    .filter(
+      (m) =>
+        m.identificador ||
+        m.mensaje ||
+        m.informacionAdicional ||
+        m.tipo
+    );
 }
 
-async function consultarAutorizacion(claveAcceso, ambiente) {
+async function consultarAutorizacion(
+  claveAcceso,
+  ambiente
+) {
   const soap = `<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ec="http://ec.gob.sri.ws.autorizacion">
   <soapenv:Body>
@@ -354,168 +690,516 @@ async function consultarAutorizacion(claveAcceso, ambiente) {
   </soapenv:Body>
 </soapenv:Envelope>`;
 
-  const url = SRI_URLS[ambiente].autorizacion.replace('?wsdl', '');
-  const res = await axios.post(url, soap, {
-    headers: { 'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': '' },
-    timeout: 30000,
-  });
+  const url =
+    SRI_URLS[
+      ambiente
+    ].autorizacion.replace(
+      '?wsdl',
+      ''
+    );
 
-  const doc = new DOMParser().parseFromString(res.data, 'text/xml');
-  const estado = doc.getElementsByTagName('estado')[0]?.textContent ?? 'NO_AUTORIZADO';
-  const numAut = doc.getElementsByTagName('numeroAutorizacion')[0]?.textContent ?? null;
-  const fechaAut = doc.getElementsByTagName('fechaAutorizacion')[0]?.textContent ?? null;
-  const mensajes = extraerMensajesSri(res.data);
+  const res = await axios.post(
+    url,
+    soap,
+    {
+      headers: {
+        'Content-Type':
+          'text/xml; charset=utf-8',
+        SOAPAction: '',
+      },
+      timeout: 30000,
+    }
+  );
 
-  return { estado, numeroAutorizacion: numAut, fechaAutorizacion: fechaAut, mensajes, raw: res.data };
+  const doc =
+    new DOMParser().parseFromString(
+      res.data,
+      'text/xml'
+    );
+
+  return {
+    estado:
+      doc.getElementsByTagName(
+        'estado'
+      )[0]?.textContent ??
+      'NO_AUTORIZADO',
+
+    numeroAutorizacion:
+      doc.getElementsByTagName(
+        'numeroAutorizacion'
+      )[0]?.textContent ??
+      null,
+
+    fechaAutorizacion:
+      doc.getElementsByTagName(
+        'fechaAutorizacion'
+      )[0]?.textContent ??
+      null,
+
+    mensajes:
+      extraerMensajesSri(
+        res.data
+      ),
+
+    raw: res.data,
+  };
 }
 
-// =============== ENVÍO DE CORREO (Gmail SMTP) ===============
-async function enviarCorreo({ to, clienteNombre, numeroFactura, numeroAutorizacion, xmlFirmado }) {
-  if (!to || !process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) return false;
+// ======================================================
+// EMAIL
+// ======================================================
 
-  const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,
-    auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD },
-  });
+async function enviarCorreo({
+  to,
+  clienteNombre,
+  numeroFactura,
+  numeroAutorizacion,
+  xmlFirmado,
+}) {
+  if (
+    !to ||
+    !process.env.GMAIL_USER ||
+    !process.env.GMAIL_APP_PASSWORD
+  ) {
+    return false;
+  }
+
+  const transporter =
+    nodemailer.createTransport({
+      host: 'smtp.gmail.com',
+      port: 465,
+      secure: true,
+      auth: {
+        user:
+          process.env.GMAIL_USER,
+        pass:
+          process.env.GMAIL_APP_PASSWORD,
+      },
+    });
 
   await transporter.sendMail({
     from: `"Casa Musical Buena Melodía J&G" <${process.env.GMAIL_USER}>`,
     to,
-    subject: `Factura electrónica ${numeroFactura} - Buena Melodía J&G`,
+    subject: `Factura electrónica ${numeroFactura}`,
     html: `
-      <p>Estimado/a <b>${clienteNombre ?? 'Cliente'}</b>,</p>
-      <p>Adjunto encontrará el comprobante electrónico autorizado por el SRI.</p>
-      <ul>
-        <li><b>Factura:</b> ${numeroFactura}</li>
-        <li><b>N° Autorización SRI:</b> ${numeroAutorizacion}</li>
-      </ul>
-      <p>Gracias por su compra.</p>
-      <p style="color:#888;font-size:12px">Casa Musical Buena Melodía J&amp;G</p>
+      <p>Estimado/a <b>${clienteNombre ?? 'Cliente'}</b></p>
+      <p>Adjunto encontrará su comprobante autorizado.</p>
     `,
     attachments: [
-      { filename: `Factura-${numeroFactura}.xml`, content: xmlFirmado, contentType: 'application/xml' },
+      {
+        filename: `Factura-${numeroFactura}.xml`,
+        content: xmlFirmado,
+        contentType:
+          'application/xml',
+      },
     ],
   });
+
   return true;
 }
 
-// =============== ENDPOINT PRINCIPAL ===============
-app.post('/procesar-factura', async (req, res) => {
-  try {
-    const { xml, certBase64, certPassword, ambiente, claveAcceso, email, clienteNombre, numeroFactura } = req.body;
+// ======================================================
+// ENDPOINT PRINCIPAL
+// ======================================================
 
-    if (!xml || !certBase64 || !certPassword || !ambiente || !claveAcceso) {
-      return res.status(400).json({ ok: false, error: 'Faltan parámetros' });
-    }
-
-    const xmlLimpio = limpiarXml(xml);
-    const diagnosticoXml = diagnosticarXml(xmlLimpio);
-    if (!diagnosticoXml.ok) {
-      return res.json({
-        ok: false,
-        estado: 'XML_INVALIDO',
-        error: 'El XML generado no cumple las condiciones necesarias para firmarse y enviarse al SRI.',
-        mensajes: diagnosticoXml.errores.map((mensaje) => ({ tipo: 'ERROR', identificador: 'XML', mensaje })),
-        diagnosticoXml: diagnosticoXml.resumen,
-      });
-    }
-
-    const p12Buffer = Buffer.from(certBase64, 'base64');
-    const rucXml = getTag(xmlLimpio, 'ruc');
-    const certInfo = extraerCertificado(p12Buffer, certPassword);
-    const certError = validarCertificadoContraXml({ xml: xmlLimpio, certInfo });
-    console.log('Procesando factura SRI', {
-      version: SERVICE_VERSION,
-      numeroFactura,
-      ambiente,
-      rucXml,
-      claveAcceso: `${String(claveAcceso).slice(0, 10)}...${String(claveAcceso).slice(-6)}`,
-      xml: diagnosticoXml.resumen,
-      certValidTo: certInfo.validTo.toISOString().slice(0, 10),
-      certSubject: certInfo.subject,
-    });
-
-    if (certError) {
-      console.error('Certificado rechazado antes de enviar al SRI:', certError);
-      return res.json({ ok: false, estado: 'CERTIFICADO_INVALIDO', error: certError, mensajes: [{ tipo: 'ERROR', identificador: 'CERTIFICADO', mensaje: certError }] });
-    }
-
-    // 1. Firmar (usar p12 saneado: SOLO el certificado vigente + su llave)
-
-    console.log('Certificado seleccionado para firmar', {
-  numeroFactura,
-  totalCertsEnP12: certInfo.totalCertsEnP12,
-  validFrom: certInfo.validFrom.toISOString().slice(0, 10),
-  validTo: certInfo.validTo.toISOString().slice(0, 10),
-});
-    
-    const xmlFirmado = await firmarXML(xmlLimpio, p12Buffer, certPassword);
-    if (!xmlFirmado.includes('<ds:Signature')) {
-      throw new Error('La firma XAdES no fue insertada correctamente en el XML.');
-    }
-    console.log('XML firmado correctamente', {
-      numeroFactura,
-      contieneSignature: xmlFirmado.includes('<ds:Signature'),
-      tieneNamespaceDs: xmlFirmado.includes('xmlns:ds='),
-      tieneXades: xmlFirmado.includes('xades'),
-      tieneX509: xmlFirmado.includes('X509Certificate'),
-      firmadoSha256: hashXml(xmlFirmado)
-    });
-    fs.writeFileSync('./ultimo-firmado.xml', xmlFirmado);
-
-    // 2. Enviar a recepción
-    const recepcion = await enviarRecepcion(xmlFirmado, ambiente);
-    console.log('Respuesta recepción SRI', { numeroFactura, estado: recepcion.estado });
-    if (recepcion.estado !== 'RECIBIDA') {
-      return res.json({
-        ok: false,
-        estado: 'DEVUELTA',
-        error: 'SRI no recibió el comprobante',
-        mensajes: recepcion.mensajes.length > 0 ? recepcion.mensajes : [{ tipo: 'ERROR', identificador: 'RECEPCION', mensaje: recepcion.raw.substring(0, 500) }],
-        diagnosticoXml: diagnosticoXml.resumen,
-      });
-    }
-
-    // 3. Esperar 2s y consultar autorización
-    await new Promise(r => setTimeout(r, 2000));
-    const autorizacion = await consultarAutorizacion(claveAcceso, ambiente);
-    console.log('Respuesta autorización SRI', { numeroFactura, estado: autorizacion.estado, mensajes: autorizacion.mensajes });
-
-    if (autorizacion.estado !== 'AUTORIZADO') {
-      return res.json({
-        ok: false,
-        estado: autorizacion.estado,
-        error: autorizacion.mensajes[0]?.mensaje ?? 'SRI no autorizó el comprobante',
-        mensajes: autorizacion.mensajes,
-        diagnosticoXml: diagnosticoXml.resumen,
-      });
-    }
-
-    // 4. Enviar correo si hay destinatario
-    let correoEnviado = false;
+app.post(
+  '/procesar-factura',
+  async (req, res) => {
     try {
-      correoEnviado = await enviarCorreo({ to: email, clienteNombre, numeroFactura, numeroAutorizacion: autorizacion.numeroAutorizacion, xmlFirmado });
-    } catch (e) {
-      console.error('Error enviando correo:', e.message);
+      const {
+        xml,
+        certBase64,
+        certPassword,
+        ambiente,
+        claveAcceso,
+        email,
+        clienteNombre,
+        numeroFactura,
+      } = req.body;
+
+      if (
+        !xml ||
+        !certBase64 ||
+        !certPassword ||
+        !ambiente ||
+        !claveAcceso
+      ) {
+        return res.status(400).json({
+          ok: false,
+          error: 'Faltan parámetros',
+        });
+      }
+
+      const xmlLimpio =
+        limpiarXml(xml);
+
+      const diagnosticoXml =
+        diagnosticarXml(xmlLimpio);
+
+      if (!diagnosticoXml.ok) {
+        return res.json({
+          ok: false,
+          estado: 'XML_INVALIDO',
+          error:
+            'El XML generado no cumple las condiciones necesarias para firmarse y enviarse al SRI.',
+          mensajes:
+            diagnosticoXml.errores.map(
+              (mensaje) => ({
+                tipo: 'ERROR',
+                identificador: 'XML',
+                mensaje,
+              })
+            ),
+          diagnosticoXml:
+            diagnosticoXml.resumen,
+        });
+      }
+
+      const p12Buffer =
+        Buffer.from(
+          certBase64,
+          'base64'
+        );
+
+      const rucXml = getTag(
+        xmlLimpio,
+        'ruc'
+      );
+
+      let certInfo;
+
+      try {
+        certInfo =
+          extraerCertificado(
+            p12Buffer,
+            certPassword
+          );
+      } catch (error) {
+        const mensaje =
+          error.message ??
+          'No se pudo validar el archivo .p12.';
+
+        console.error(
+          'Certificado rechazado:',
+          mensaje
+        );
+
+        return res.json({
+          ok: false,
+          estado:
+            'CERTIFICADO_INVALIDO',
+          error: mensaje,
+          mensajes: [
+            {
+              tipo: 'ERROR',
+              identificador:
+                'CERTIFICADO',
+              mensaje,
+            },
+          ],
+          diagnosticoXml:
+            diagnosticoXml.resumen,
+        });
+      }
+
+      const certError =
+        validarCertificadoContraXml(
+          {
+            xml: xmlLimpio,
+            certInfo,
+          }
+        );
+
+      console.log(
+        'Procesando factura SRI',
+        {
+          version:
+            SERVICE_VERSION,
+          numeroFactura,
+          ambiente,
+          rucXml,
+          claveAcceso: `${String(
+            claveAcceso
+          ).slice(
+            0,
+            10
+          )}...${String(
+            claveAcceso
+          ).slice(-6)}`,
+          xml:
+            diagnosticoXml.resumen,
+          certValidTo:
+            certInfo.validTo
+              .toISOString()
+              .slice(0, 10),
+          certSubject:
+            certInfo.subject,
+          certIndex:
+            certInfo.certIndex,
+        }
+      );
+
+      if (certError) {
+        console.error(
+          'Certificado inválido:',
+          certError
+        );
+
+        return res.json({
+          ok: false,
+          estado:
+            'CERTIFICADO_INVALIDO',
+          error: certError,
+          mensajes: [
+            {
+              tipo: 'ERROR',
+              identificador:
+                'CERTIFICADO',
+              mensaje: certError,
+            },
+          ],
+        });
+      }
+
+      // ======================================================
+      // FIRMAR XML
+      // ======================================================
+
+      console.log(
+        'Certificado seleccionado',
+        {
+          numeroFactura,
+          totalCertsEnP12:
+            certInfo.totalCertsEnP12,
+          totalLlavesEnP12:
+            certInfo.totalLlavesEnP12,
+          certIndex:
+            certInfo.certIndex,
+          validFrom:
+            certInfo.validFrom
+              .toISOString()
+              .slice(0, 10),
+          validTo:
+            certInfo.validTo
+              .toISOString()
+              .slice(0, 10),
+        }
+      );
+
+      const xmlFirmado =
+        await firmarXML(
+          xmlLimpio,
+          certInfo
+        );
+
+      if (
+        !xmlFirmado.includes(
+          '<ds:Signature'
+        )
+      ) {
+        throw new Error(
+          'La firma XAdES no fue insertada correctamente en el XML.'
+        );
+      }
+
+      console.log(
+        'XML firmado correctamente',
+        {
+          numeroFactura,
+          contieneSignature:
+            xmlFirmado.includes(
+              '<ds:Signature'
+            ),
+          tieneNamespaceDs:
+            xmlFirmado.includes(
+              'xmlns:ds='
+            ),
+          tieneXades:
+            xmlFirmado.includes(
+              'xades'
+            ),
+          tieneX509:
+            xmlFirmado.includes(
+              'X509Certificate'
+            ),
+          firmadoSha256:
+            hashXml(xmlFirmado),
+        }
+      );
+
+      // ======================================================
+      // ENVIAR A RECEPCIÓN SRI
+      // ======================================================
+
+      const recepcion =
+        await enviarRecepcion(
+          xmlFirmado,
+          ambiente
+        );
+
+      console.log(
+        'Respuesta recepción SRI',
+        {
+          numeroFactura,
+          estado:
+            recepcion.estado,
+        }
+      );
+
+      if (
+        recepcion.estado !==
+        'RECIBIDA'
+      ) {
+        return res.json({
+          ok: false,
+          estado: 'DEVUELTA',
+          error:
+            'SRI no recibió el comprobante',
+          mensajes:
+            recepcion.mensajes
+              .length > 0
+              ? recepcion.mensajes
+              : [
+                  {
+                    tipo: 'ERROR',
+                    identificador:
+                      'RECEPCION',
+                    mensaje:
+                      recepcion.raw.substring(
+                        0,
+                        500
+                      ),
+                  },
+                ],
+          diagnosticoXml:
+            diagnosticoXml.resumen,
+        });
+      }
+
+      // ======================================================
+      // CONSULTAR AUTORIZACIÓN
+      // ======================================================
+
+      await new Promise((r) =>
+        setTimeout(r, 2000)
+      );
+
+      const autorizacion =
+        await consultarAutorizacion(
+          claveAcceso,
+          ambiente
+        );
+
+      console.log(
+        'Respuesta autorización SRI',
+        {
+          numeroFactura,
+          estado:
+            autorizacion.estado,
+          mensajes:
+            autorizacion.mensajes,
+        }
+      );
+
+      if (
+        autorizacion.estado !==
+        'AUTORIZADO'
+      ) {
+        return res.json({
+          ok: false,
+          estado:
+            autorizacion.estado,
+          error:
+            autorizacion
+              .mensajes?.[0]
+              ?.mensaje ??
+            'SRI no autorizó el comprobante',
+          mensajes:
+            autorizacion.mensajes,
+          diagnosticoXml:
+            diagnosticoXml.resumen,
+        });
+      }
+
+      // ======================================================
+      // ENVIAR EMAIL
+      // ======================================================
+
+      let correoEnviado =
+        false;
+
+      try {
+        correoEnviado =
+          await enviarCorreo({
+            to: email,
+            clienteNombre,
+            numeroFactura,
+            numeroAutorizacion:
+              autorizacion.numeroAutorizacion,
+            xmlFirmado,
+          });
+      } catch (e) {
+        console.error(
+          'Error enviando correo:',
+          e.message
+        );
+      }
+
+      // ======================================================
+      // RESPUESTA FINAL
+      // ======================================================
+
+      return res.json({
+        ok: true,
+        estado: 'AUTORIZADO',
+        numeroAutorizacion:
+          autorizacion.numeroAutorizacion,
+        fechaAutorizacion:
+          autorizacion.fechaAutorizacion,
+        mensajes:
+          autorizacion.mensajes,
+        xmlFirmado,
+        correoEnviado,
+      });
+
+    } catch (err) {
+
+      console.error(
+        'Error procesando factura:',
+        err
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          err.message ??
+          'Error interno',
+      });
+
     }
-
-    res.json({
-      ok: true,
-      estado: 'AUTORIZADO',
-      numeroAutorizacion: autorizacion.numeroAutorizacion,
-      fechaAutorizacion: autorizacion.fechaAutorizacion,
-      mensajes: autorizacion.mensajes,
-      xmlFirmado,
-      correoEnviado,
-    });
-  } catch (err) {
-    console.error('Error procesando factura:', err);
-    res.status(500).json({ ok: false, error: err.message ?? 'Error interno' });
   }
-});
+);
 
-app.get('/', (_req, res) => res.json({ ok: true, service: 'bm-sri-signer', version: SERVICE_VERSION }));
+// ======================================================
+// HEALTHCHECK
+// ======================================================
 
-app.listen(PORT, () => console.log(`SRI Signer corriendo en puerto ${PORT}`));
+app.get('/', (_req, res) =>
+  res.json({
+    ok: true,
+    service:
+      'bm-sri-signer',
+    version:
+      SERVICE_VERSION,
+  })
+);
+
+// ======================================================
+// START SERVER
+// ======================================================
+
+app.listen(PORT, () =>
+  console.log(
+    `SRI Signer corriendo en puerto ${PORT}`
+  )
+);
