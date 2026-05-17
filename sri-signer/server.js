@@ -8,7 +8,7 @@ import { createHash } from 'crypto';
 import fs from 'fs';
 import { DOMParser } from '@xmldom/xmldom';
 import * as xadesjs from 'xadesjs';
-import { Crypto } from '@peculiar/webcrypto';
+import { Crypto } from '@peculiar/webcrypto'; 
 
 const app = express();
 app.use(cors());
