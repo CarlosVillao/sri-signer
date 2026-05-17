@@ -8,7 +8,7 @@ import { createHash } from 'crypto';
 import { signInvoiceXml } from 'ec-sri-invoice-signer';
 import https from 'https'; 
 import dns from 'dns';
-import sgMail from '@sendgrid/mail';
+import sgMail from '@sendgrid/mail'; 
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
