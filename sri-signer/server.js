@@ -410,6 +410,17 @@ async function enviarCorreo({ to, clienteNombre, numeroFactura, numeroAutorizaci
 // =============== ENDPOINT PRINCIPAL ===============
 app.post('/procesar-factura', async (req, res) => {
   try {
+    const cacheEnvios = global.cacheEnvios || (global.cacheEnvios = new Map());
+
+    if (cacheEnvios.has(claveAcceso)) {
+      return res.json({
+        ok: false,
+        estado: 'DUPLICADA',
+        error: 'Esta factura ya fue procesada en este servidor'
+      });
+    }
+
+    cacheEnvios.set(claveAcceso, Date.now());
     const { xml, certBase64, certPassword, ambiente, claveAcceso, email, clienteNombre, numeroFactura } = req.body;
 
     if (!xml || !certBase64 || !certPassword || !ambiente || !claveAcceso) {
@@ -484,8 +495,12 @@ app.post('/procesar-factura', async (req, res) => {
 
     // 2. Enviar a recepción
     const recepcion = await enviarRecepcion(xmlFirmado, ambienteSri);
+    if (recepcion.estado === 'RECIBIDA' && recepcion.mensajes.length === 0) {
+      cacheEnvios.set(claveAcceso, 'ENVIADO_SRI');
+    }
     console.log('Respuesta recepción SRI', { numeroFactura, estado: recepcion.estado, mensajes: recepcion.mensajes });
     if (recepcion.estado !== 'RECIBIDA') {
+      cacheEnvios.delete(claveAcceso);
       return res.json({
         ok: false,
         estado: 'DEVUELTA',
