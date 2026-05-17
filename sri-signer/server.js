@@ -419,6 +419,14 @@ async function enviarCorreo({
         rejectUnauthorized: false
       }
     });
+
+    transporter.verify(function(error, success) {
+  if (error) {
+    console.log("SMTP ERROR:", error);
+  } else {
+    console.log("SMTP listo para enviar correos");
+  }
+});
     
     const info = await transporter.sendMail({
       from: `"Casa Musical Buena Melodía J&G" <${process.env.GMAIL_USER}>`,
