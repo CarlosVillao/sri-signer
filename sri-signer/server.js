@@ -2,13 +2,16 @@ import express from 'express';
 import cors from 'cors';
 import { DOMParser } from '@xmldom/xmldom';
 import axios from 'axios';
-import nodemailer from 'nodemailer';
 import forge from 'node-forge';
 import { XMLValidator } from 'fast-xml-parser';
 import { createHash } from 'crypto';
 import { signInvoiceXml } from 'ec-sri-invoice-signer';
 import https from 'https'; 
 import dns from 'dns';
+import sgMail from '@sendgrid/mail';
+
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+
 dns.setDefaultResultOrder('ipv4first');
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
@@ -409,69 +412,33 @@ async function enviarCorreo({
   xmlFirmado
 }) {
   try {
-    if (!to || !process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
-      return false;
-    }
-      console.log("EMAIL DEBUG", {
-        user: process.env.GMAIL_USER,
-        pass: process.env.GMAIL_APP_PASSWORD ? "OK" : "MISSING"
-      });
+    if (!to) return false;
 
-
-  const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 587,
-    secure: false, // 👈 IMPORTANTE (STARTTLS)
-    requireTLS: true,
-    auth: {
-      user: process.env.GMAIL_USER,
-      pass: process.env.GMAIL_APP_PASSWORD
-    },
-    tls: {
-      family: 4,              // fuerza IPv4
-      minVersion: 'TLSv1.2'
-    }
-  });
-
-    transporter.verify(function(error, success) {
-  if (error) {
-    console.log("SMTP ERROR:", error);
-  } else {
-    console.log("SMTP listo para enviar correos");
-  }
-});
-    
-    const info = await transporter.sendMail({
-      from: `"Casa Musical Buena Melodía J&G" <${process.env.GMAIL_USER}>`,
+    const msg = {
       to,
+      from: process.env.GMAIL_USER, // verificado en SendGrid
       subject: `Factura electrónica ${numeroFactura} - Buena Melodía J&G`,
-      html: `
-        <p>Estimado/a <b>${clienteNombre ?? 'Cliente'}</b>,</p>
-        <p>Adjunto encontrará el comprobante electrónico autorizado por el SRI.</p>
-        <ul>
-          <li><b>Factura:</b> ${numeroFactura}</li>
-          <li><b>N° Autorización SRI:</b> ${numeroAutorizacion}</li>
-        </ul>
-        <p>Gracias por su compra.</p>
-        <p style="color:#888;font-size:12px">Casa Musical Buena Melodía J&amp;G</p>
-      `,
+      text: `Estimado ${clienteNombre ?? 'Cliente'}, su factura ${numeroFactura} ha sido autorizada por el SRI.`,
       attachments: [
         {
+          content: Buffer.from(xmlFirmado).toString('base64'),
           filename: `Factura-${numeroFactura}.xml`,
-          content: xmlFirmado,
-          contentType: 'application/xml'
-        },
-      ],
-    });
+          type: 'application/xml',
+          disposition: 'attachment'
+        }
+      ]
+    };
 
-    return Boolean(info?.messageId);
+    await sgMail.send(msg);
+
+    console.log('EMAIL ENVIADO OK:', numeroFactura);
+    return true;
 
   } catch (error) {
-    console.error('Error enviando correo:', error);
+    console.error('ERROR SENDGRID:', error.response?.body || error.message);
     return false;
   }
 }
-
 // =============== ENDPOINT PRINCIPAL ===============
 app.post('/procesar-factura', async (req, res) => {
   try {
