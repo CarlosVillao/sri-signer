@@ -105,7 +105,7 @@ const newP12Asn1 = forge.pkcs12.toPkcs12Asn1(
 // =============== FIRMADO XAdES-BES REAL ===============
 async function firmarXML(xmlString, p12Buffer, password) {
 
-  const xmlFirmado = SriInvoiceSigner.sign(
+  const xmlFirmado = SriInvoiceSigner(
     xmlString,
     p12Buffer,
     password
