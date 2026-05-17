@@ -7,10 +7,11 @@ import { XMLValidator } from 'fast-xml-parser';
 import { createHash } from 'crypto';
 import fs from 'fs';
 import { DOMParser } from '@xmldom/xmldom';
-import pkg from 'ec-sri-invoice-signer';
+import signer from 'ec-sri-invoice-signer';
 
-const SriInvoiceSigner = pkg.default || pkg;
-console.log('EXPORT EC SRI:', pkg);
+const {
+  signInvoiceXml
+} = signer;
 
 const app = express();
 app.use(cors());
@@ -108,12 +109,11 @@ const newP12Asn1 = forge.pkcs12.toPkcs12Asn1(
 // =============== FIRMADO XAdES-BES REAL ===============
 async function firmarXML(xmlString, p12Buffer, password) {
 
-  throw new Error('DEBUG EXPORT');
-  //const xmlFirmado = SriInvoiceSigner(
-    //xmlString,
-    //p12Buffer,
-    //password
-  //);
+  const xmlFirmado = signInvoiceXml(
+    xmlString,
+    p12Buffer,
+    password
+  );
 
   fs.writeFileSync(
     './debug-firmado.xml',
