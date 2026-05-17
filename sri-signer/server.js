@@ -7,7 +7,8 @@ import { XMLValidator } from 'fast-xml-parser';
 import { createHash } from 'crypto';
 import fs from 'fs';
 import { DOMParser } from '@xmldom/xmldom';
-import SriInvoiceSigner from 'ec-sri-invoice-signer';
+import pkg from 'ec-sri-invoice-signer';
+const SriInvoiceSigner = pkg.default || pkg;
 
 const app = express();
 app.use(cors());
@@ -105,13 +106,12 @@ const newP12Asn1 = forge.pkcs12.toPkcs12Asn1(
 // =============== FIRMADO XAdES-BES REAL ===============
 async function firmarXML(xmlString, p12Buffer, password) {
 
-  const signer = new SriInvoiceSigner(
+  const signer = new SriInvoiceSigner();
+
+  const xmlFirmado = signer.sign(
+    xmlString,
     p12Buffer,
     password
-  );
-
-  const xmlFirmado = await signer.sign(
-    xmlString
   );
 
   fs.writeFileSync(
