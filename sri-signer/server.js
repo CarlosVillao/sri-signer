@@ -8,9 +8,7 @@ import { createHash } from 'crypto';
 import { signInvoiceXml } from 'ec-sri-invoice-signer';
 import https from 'https'; 
 import dns from 'dns';
-import sgMail from '@sendgrid/mail'; 
-
-sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+import nodemailer from 'nodemailer';
 
 dns.setDefaultResultOrder('ipv4first');
 
@@ -412,30 +410,44 @@ async function enviarCorreo({
   xmlFirmado
 }) {
   try {
-    if (!to) return false;
+    if (!to || !process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
+      return false;
+    }
 
-    const msg = {
+    const transporter = nodemailer.createTransport({
+      host: 'smtp.gmail.com',
+      port: 587,
+      secure: false,
+      auth: {
+        user: process.env.GMAIL_USER,
+        pass: process.env.GMAIL_APP_PASSWORD
+      }
+    });
+
+    await transporter.verify();
+
+    const info = await transporter.sendMail({
+      from: `"Casa Musical Buena Melodía J&G" <${process.env.GMAIL_USER}>`,
       to,
-      from: process.env.GMAIL_USER, // verificado en SendGrid
-      subject: `Factura electrónica ${numeroFactura} - Buena Melodía J&G`,
-      text: `Estimado ${clienteNombre ?? 'Cliente'}, su factura ${numeroFactura} ha sido autorizada por el SRI.`,
+      subject: `Factura electrónica ${numeroFactura} - SRI`,
+      html: `
+        <p>Estimado/a <b>${clienteNombre ?? 'Cliente'}</b>,</p>
+        <p>Su factura <b>${numeroFactura}</b> ha sido autorizada por el SRI.</p>
+        <p><b>N° Autorización:</b> ${numeroAutorizacion}</p>
+      `,
       attachments: [
         {
-          content: Buffer.from(xmlFirmado).toString('base64'),
           filename: `Factura-${numeroFactura}.xml`,
-          type: 'application/xml',
-          disposition: 'attachment'
+          content: xmlFirmado,
+          contentType: 'application/xml'
         }
       ]
-    };
+    });
 
-    await sgMail.send(msg);
-
-    console.log('EMAIL ENVIADO OK:', numeroFactura);
-    return true;
+    return !!info.messageId;
 
   } catch (error) {
-    console.error('ERROR SENDGRID:', error.response?.body || error.message);
+    console.error('ERROR GMAIL:', error.message);
     return false;
   }
 }
