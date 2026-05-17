@@ -458,7 +458,7 @@ const soap = `<?xml version="1.0" encoding="UTF-8"?>
         extraerMensajesSri(res.data)
     };
 
-  }   } catch (error) {
+  } catch (error) {
 
     console.error(
       'ERROR SRI RECEPCION:',
