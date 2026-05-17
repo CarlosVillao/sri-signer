@@ -442,13 +442,18 @@ app.post('/procesar-factura', async (req, res) => {
     }
 
     // 1. Firmar (usar p12 saneado: SOLO el certificado vigente + su llave)
-    const { buffer: p12Vigente, certVigente } = prepararP12Vigente(p12Buffer, certPassword);
+    const { certVigente } = prepararP12Vigente(
+      p12Buffer,
+      certPassword
+    );
+    
     console.log('Certificado seleccionado para firmar', {
       numeroFactura,
       totalCertsEnP12: certInfo.totalCertsEnP12,
       validFrom: certVigente.validity.notBefore.toISOString().slice(0, 10),
       validTo: certVigente.validity.notAfter.toISOString().slice(0, 10),
     });
+    
     const xmlFirmado = await firmarXML(xmlLimpio, p12Vigente, certPassword);
     if (!xmlFirmado.includes('<ds:Signature')) {
       throw new Error('La firma XAdES no fue insertada correctamente en el XML.');
