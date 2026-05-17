@@ -454,7 +454,7 @@ app.post('/procesar-factura', async (req, res) => {
       validTo: certVigente.validity.notAfter.toISOString().slice(0, 10),
     });
     
-    const xmlFirmado = await firmarXML(xmlLimpio, p12Vigente, certPassword);
+    const xmlFirmado = await firmarXML(xmlLimpio, p12Buffer, certPassword);
     if (!xmlFirmado.includes('<ds:Signature')) {
       throw new Error('La firma XAdES no fue insertada correctamente en el XML.');
     }
