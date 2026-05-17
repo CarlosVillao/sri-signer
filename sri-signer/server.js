@@ -321,26 +321,25 @@ async function enviarRecepcion(xmlFirmado, ambiente) {
 
   const url = SRI_URLS[ambiente].recepcion.replace('?wsdl', '');
   const agent = new https.Agent({
-      keepAlive: true,
-      keepAliveMsecs: 10_000,
-      maxSockets: 5,
-      family: 4,
-      rejectUnauthorized: false,
-      minVersion: 'TLSv1.2',
-    });
+    keepAlive: false,   // 🔥 CRÍTICO
+    family: 4,
+    minVersion: 'TLSv1.2',
+    rejectUnauthorized: false
+  });
 
-const res = await axios.post(url, soap, {
-  headers: {
+  const res = await axios.post(url, soap, {
+    headers: {
       'Content-Type': 'text/xml; charset=utf-8',
       SOAPAction: '',
       'User-Agent': 'NodeJS-SRI-Client',
       Connection: 'close'
     },
-  timeout: 90000,
-  httpsAgent: agent,
-  maxBodyLength: Infinity,
-  maxContentLength: Infinity,
-});
+    timeout: 90000,
+    httpsAgent: agent,
+    maxBodyLength: Infinity,
+    maxContentLength: Infinity,
+    validateStatus: () => true
+  });
   const estadoMatch = res.data.match(/<estado>(.*?)<\/estado>/);
   return { estado: estadoMatch?.[1] ?? 'DESCONOCIDO', raw: res.data, mensajes: extraerMensajesSri(res.data) };
 }
@@ -372,10 +371,11 @@ async function consultarAutorizacion(claveAcceso, ambiente) {
 
   const url = SRI_URLS[ambiente].autorizacion.replace('?wsdl', '');
   const agent = new https.Agent({
-      keepAlive: false,
-      family: 4,
-      minVersion: 'TLSv1.2',
-    });
+    keepAlive: false,   // 🔥 CRÍTICO
+    family: 4,
+    minVersion: 'TLSv1.2',
+    rejectUnauthorized: false
+  });
 
   const res = await axios.post(url, soap, {
     headers: {
@@ -384,10 +384,11 @@ async function consultarAutorizacion(claveAcceso, ambiente) {
       'User-Agent': 'NodeJS-SRI-Client',
       Connection: 'close'
     },
-    timeout: 60000,
+    timeout: 90000,
     httpsAgent: agent,
     maxBodyLength: Infinity,
     maxContentLength: Infinity,
+    validateStatus: () => true
   });
 
   const doc = new DOMParser().parseFromString(res.data, 'text/xml');
