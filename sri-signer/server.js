@@ -12,6 +12,7 @@ import dns from 'dns';
 dns.setDefaultResultOrder('ipv4first');
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+process.env.NODE_OPTIONS = '--dns-result-order=ipv4first';
 
 const app = express();
 app.use(cors());
@@ -416,19 +417,20 @@ async function enviarCorreo({
       });
 
 
-        const transporter = nodemailer.createTransport({
-          host: 'smtp.gmail.com',
-          port: 465,
-          secure: true,
-          auth: {
-            user: process.env.GMAIL_USER,
-            pass: process.env.GMAIL_APP_PASSWORD
-          },
-          tls: {
-            family: 4,
-            minVersion: 'TLSv1.2'
-          }
-        });
+  const transporter = nodemailer.createTransport({
+    host: 'smtp.gmail.com',
+    port: 587,
+    secure: false, // 👈 IMPORTANTE (STARTTLS)
+    requireTLS: true,
+    auth: {
+      user: process.env.GMAIL_USER,
+      pass: process.env.GMAIL_APP_PASSWORD
+    },
+    tls: {
+      family: 4,              // fuerza IPv4
+      minVersion: 'TLSv1.2'
+    }
+  });
 
     transporter.verify(function(error, success) {
   if (error) {
