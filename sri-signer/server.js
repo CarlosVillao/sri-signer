@@ -493,7 +493,6 @@ const soap = `<?xml version="1.0" encoding="UTF-8"?>
     };
   }
 }
-}
 
 function extraerMensajesSri(rawXml) {
   const doc = new DOMParser().parseFromString(rawXml, 'text/xml');
