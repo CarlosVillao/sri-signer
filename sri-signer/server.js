@@ -1,4 +1,4 @@
-import express from 'express';
+    import express from 'express';
 import cors from 'cors';
 import { DOMParser } from '@xmldom/xmldom';
 import axios from 'axios';
@@ -8,6 +8,8 @@ import { XMLValidator } from 'fast-xml-parser';
 import { createHash } from 'crypto';
 import { signInvoiceXml } from 'ec-sri-invoice-signer';
 import https from 'https'; 
+import dns from 'dns';
+dns.setDefaultResultOrder('ipv4first');
 
 const app = express();
 app.use(cors());
@@ -415,9 +417,7 @@ async function enviarCorreo({
         user: process.env.GMAIL_USER,
         pass: process.env.GMAIL_APP_PASSWORD
       },
-      tls: {
-        rejectUnauthorized: false
-      }
+        family: 4
     });
 
     transporter.verify(function(error, success) {
