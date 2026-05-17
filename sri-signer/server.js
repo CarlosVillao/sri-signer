@@ -410,6 +410,9 @@ async function enviarCorreo({ to, clienteNombre, numeroFactura, numeroAutorizaci
 // =============== ENDPOINT PRINCIPAL ===============
 app.post('/procesar-factura', async (req, res) => {
   try {
+
+    const { xml, certBase64, certPassword, ambiente, claveAcceso, email, clienteNombre, numeroFactura } = req.body;
+
     const cacheEnvios = global.cacheEnvios || (global.cacheEnvios = new Map());
 
     if (cacheEnvios.has(claveAcceso)) {
@@ -419,9 +422,7 @@ app.post('/procesar-factura', async (req, res) => {
         error: 'Esta factura ya fue procesada en este servidor'
       });
     }
-
     cacheEnvios.set(claveAcceso, Date.now());
-    const { xml, certBase64, certPassword, ambiente, claveAcceso, email, clienteNombre, numeroFactura } = req.body;
 
     if (!xml || !certBase64 || !certPassword || !ambiente || !claveAcceso) {
       return res.status(400).json({ ok: false, error: 'Faltan parámetros' });
