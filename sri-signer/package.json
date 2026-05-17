@@ -1,6 +1,6 @@
 {
   "name": "bm-sri-signer",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Firmador XAdES-BES + cliente SOAP SRI Ecuador + envío de correos para Casa Musical Buena Melodía J&G",
   "main": "server.js",
   "type": "module",
@@ -18,7 +18,7 @@
     "nodemailer": "^6.9.16",
     "xadesjs": "^2.4.3",
     "@xmldom/xmldom": "^0.8.10",
-    "xpath": "^0.0.34",
+    "xpath": "^0.0.34"
   },
   "engines": {
     "node": "20.x"
