@@ -12,7 +12,6 @@ import nodemailer from 'nodemailer';
 
 dns.setDefaultResultOrder('ipv4first');
 
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 process.env.NODE_OPTIONS = '--dns-result-order=ipv4first';
 
 const app = express();
@@ -322,7 +321,7 @@ async function enviarRecepcion(xmlFirmado, ambiente) {
 
   const url = SRI_URLS[ambiente].recepcion.replace('?wsdl', '');
   const agent = new https.Agent({
-    keepAlive: false,   // 🔥 CRÍTICO
+    keepAlive: true,   // 🔥 CRÍTICO
     family: 4,
     minVersion: 'TLSv1.2',
     rejectUnauthorized: false
@@ -335,7 +334,7 @@ async function enviarRecepcion(xmlFirmado, ambiente) {
       'User-Agent': 'NodeJS-SRI-Client',
       Connection: 'close'
     },
-    timeout: 90000,
+    timeout: 120000,
     httpsAgent: agent,
     maxBodyLength: Infinity,
     maxContentLength: Infinity,
@@ -372,7 +371,7 @@ async function consultarAutorizacion(claveAcceso, ambiente) {
 
   const url = SRI_URLS[ambiente].autorizacion.replace('?wsdl', '');
   const agent = new https.Agent({
-    keepAlive: false,   // 🔥 CRÍTICO
+    keepAlive: true,   // 🔥 CRÍTICO
     family: 4,
     minVersion: 'TLSv1.2',
     rejectUnauthorized: false
@@ -385,7 +384,7 @@ async function consultarAutorizacion(claveAcceso, ambiente) {
       'User-Agent': 'NodeJS-SRI-Client',
       Connection: 'close'
     },
-    timeout: 90000,
+    timeout: 120000,
     httpsAgent: agent,
     maxBodyLength: Infinity,
     maxContentLength: Infinity,
