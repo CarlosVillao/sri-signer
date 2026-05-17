@@ -1,4 +1,4 @@
-    import express from 'express';
+import express from 'express';
 import cors from 'cors';
 import { DOMParser } from '@xmldom/xmldom';
 import axios from 'axios';
@@ -10,6 +10,8 @@ import { signInvoiceXml } from 'ec-sri-invoice-signer';
 import https from 'https'; 
 import dns from 'dns';
 dns.setDefaultResultOrder('ipv4first');
+
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 const app = express();
 app.use(cors());
@@ -318,18 +320,22 @@ async function enviarRecepcion(xmlFirmado, ambiente) {
 
   const url = SRI_URLS[ambiente].recepcion.replace('?wsdl', '');
   const agent = new https.Agent({
-  keepAlive: false,
-  family: 4,
-  minVersion: 'TLSv1.2',
-});
+      keepAlive: true,
+      keepAliveMsecs: 10_000,
+      maxSockets: 5,
+      family: 4,
+      rejectUnauthorized: false,
+      minVersion: 'TLSv1.2',
+    });
 
 const res = await axios.post(url, soap, {
   headers: {
-    'Content-Type': 'text/xml; charset=utf-8',
-    SOAPAction: '',
-    'User-Agent': 'NodeJS-SRI-Client',
-  },
-  timeout: 30000,
+      'Content-Type': 'text/xml; charset=utf-8',
+      SOAPAction: '',
+      'User-Agent': 'NodeJS-SRI-Client',
+      Connection: 'close'
+    },
+  timeout: 90000,
   httpsAgent: agent,
   maxBodyLength: Infinity,
   maxContentLength: Infinity,
@@ -365,18 +371,19 @@ async function consultarAutorizacion(claveAcceso, ambiente) {
 
   const url = SRI_URLS[ambiente].autorizacion.replace('?wsdl', '');
   const agent = new https.Agent({
-    keepAlive: false,
-    family: 4,
-    minVersion: 'TLSv1.2',
-  });
+      keepAlive: false,
+      family: 4,
+      minVersion: 'TLSv1.2',
+    });
 
   const res = await axios.post(url, soap, {
     headers: {
       'Content-Type': 'text/xml; charset=utf-8',
       SOAPAction: '',
       'User-Agent': 'NodeJS-SRI-Client',
+      Connection: 'close'
     },
-    timeout: 30000,
+    timeout: 60000,
     httpsAgent: agent,
     maxBodyLength: Infinity,
     maxContentLength: Infinity,
@@ -409,19 +416,19 @@ async function enviarCorreo({
       });
 
 
-    const transporter = nodemailer.createTransport({
-      host: 'smtp.gmail.com',
-      port: 587,
-      secure: false,
-      auth: {
-        user: process.env.GMAIL_USER,
-        pass: process.env.GMAIL_APP_PASSWORD
-      },
-      family: 4,
-      connectionTimeout: 20000,
-      greetingTimeout: 20000,
-      socketTimeout: 30000
-    });
+        const transporter = nodemailer.createTransport({
+          host: 'smtp.gmail.com',
+          port: 465,
+          secure: true,
+          auth: {
+            user: process.env.GMAIL_USER,
+            pass: process.env.GMAIL_APP_PASSWORD
+          },
+          tls: {
+            family: 4,
+            minVersion: 'TLSv1.2'
+          }
+        });
 
     transporter.verify(function(error, success) {
   if (error) {
