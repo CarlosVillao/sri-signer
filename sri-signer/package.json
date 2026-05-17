@@ -18,7 +18,8 @@
     "nodemailer": "^6.9.16",
     "xadesjs": "^2.4.3",
     "@xmldom/xmldom": "^0.8.10",
-    "xpath": "^0.0.34"
+    "xpath": "^0.0.34",
+    "ec-sri-invoice-signer": "^1.0.8"
   },
   "engines": {
     "node": "20.x"
