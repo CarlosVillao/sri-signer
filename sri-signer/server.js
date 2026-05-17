@@ -399,17 +399,12 @@ function validarCertificadoContraXml({ xml, certInfo }) {
 // =============== ENVÍO SOAP AL SRI ===============
 async function enviarRecepcion(xmlFirmado, ambiente) {
 
-const xmlEscapado = xmlFirmado
-  .replace(/&/g, '&amp;')
-  .replace(/</g, '&lt;')
-  .replace(/>/g, '&gt;');
-
 const soap = `<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ec="http://ec.gob.sri.ws.recepcion">
   <soapenv:Header/>
   <soapenv:Body>
     <ec:validarComprobante>
-      <xml>${xmlEscapado}</xml>
+      <xml>${xmlFirmado}</xml>
     </ec:validarComprobante>
   </soapenv:Body>
 </soapenv:Envelope>`;
@@ -423,9 +418,7 @@ const soap = `<?xml version="1.0" encoding="UTF-8"?>
   console.log('Enviando a recepcion SRI...');
 
   const httpsAgent = new https.Agent({
-  keepAlive: true,
-  rejectUnauthorized: false,
-  secureProtocol: 'TLS_method',
+  keepAlive: false,
 });
 
   try {
@@ -435,16 +428,11 @@ const soap = `<?xml version="1.0" encoding="UTF-8"?>
       soap,
       {
         headers: {
-          'Content-Type':
-            'text/xml; charset=utf-8',
+          'Content-Type': 'text/xml; charset=utf-8',
           SOAPAction: '',
-          Connection: 'close'
-        },
-
-        httpsAgent,
+      },
 
         timeout: 60000,
-
         maxBodyLength: Infinity,
         maxContentLength: Infinity,
       }
