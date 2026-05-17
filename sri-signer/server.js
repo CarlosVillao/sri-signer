@@ -7,7 +7,9 @@ import { XMLValidator } from 'fast-xml-parser';
 import { createHash } from 'crypto';
 import fs from 'fs';
 import { DOMParser } from '@xmldom/xmldom';
-import { SriInvoiceSigner } from 'ec-sri-invoice-signer';
+import pkg from 'ec-sri-invoice-signer';
+
+const { SriInvoiceSigner } = pkg;
 
 const app = express();
 app.use(cors());
