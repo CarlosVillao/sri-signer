@@ -9,6 +9,8 @@ import fs from 'fs';
 import { DOMParser } from '@xmldom/xmldom';
 import pkg from 'ec-sri-invoice-signer';
 
+const SriInvoiceSigner = pkg.default || pkg;
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -105,7 +107,7 @@ const newP12Asn1 = forge.pkcs12.toPkcs12Asn1(
 // =============== FIRMADO XAdES-BES REAL ===============
 async function firmarXML(xmlString, p12Buffer, password) {
 
-  const xmlFirmado = pkg(
+  const xmlFirmado = SriInvoiceSigner(
     xmlString,
     p12Buffer,
     password
