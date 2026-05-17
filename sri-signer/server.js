@@ -15,6 +15,20 @@ app.use(express.json({ limit: '15mb' }));
 
 const PORT = process.env.PORT || 3000;
 const SERVICE_VERSION = '1.0.4-railway-stable-sri';
+const cacheEnvios = global.cacheEnvios || (global.cacheEnvios = new Map());
+
+setInterval(() => {
+  const now = Date.now();
+  const TTL = 10 * 60 * 1000;
+
+  for (const [key, value] of cacheEnvios.entries()) {
+    if (!value?.tiempo) continue; // 👈 protección
+
+    if (now - value.tiempo > TTL) {
+      cacheEnvios.delete(key);
+    }
+  }
+}, 5 * 60 * 1000);
 
 // URLs SRI Ecuador
 const SRI_URLS = {
@@ -376,35 +390,65 @@ async function consultarAutorizacion(claveAcceso, ambiente) {
 }
 
 // =============== ENVÍO DE CORREO (Gmail SMTP) ===============
-async function enviarCorreo({ to, clienteNombre, numeroFactura, numeroAutorizacion, xmlFirmado }) {
-  if (!to || !process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) return false;
+async function enviarCorreo({
+  to,
+  clienteNombre,
+  numeroFactura,
+  numeroAutorizacion,
+  xmlFirmado
+}) {
+  try {
+    if (!to || !process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
+      return false;
+    }
+      console.log("EMAIL DEBUG", {
+        user: process.env.GMAIL_USER,
+        pass: process.env.GMAIL_APP_PASSWORD ? "OK" : "MISSING"
+      });
 
-  const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,
-    auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD },
-  });
 
-  await transporter.sendMail({
-    from: `"Casa Musical Buena Melodía J&G" <${process.env.GMAIL_USER}>`,
-    to,
-    subject: `Factura electrónica ${numeroFactura} - Buena Melodía J&G`,
-    html: `
-      <p>Estimado/a <b>${clienteNombre ?? 'Cliente'}</b>,</p>
-      <p>Adjunto encontrará el comprobante electrónico autorizado por el SRI.</p>
-      <ul>
-        <li><b>Factura:</b> ${numeroFactura}</li>
-        <li><b>N° Autorización SRI:</b> ${numeroAutorizacion}</li>
-      </ul>
-      <p>Gracias por su compra.</p>
-      <p style="color:#888;font-size:12px">Casa Musical Buena Melodía J&amp;G</p>
-    `,
-    attachments: [
-      { filename: `Factura-${numeroFactura}.xml`, content: xmlFirmado, contentType: 'application/xml' },
-    ],
-  });
-  return true;
+    const transporter = nodemailer.createTransport({
+      host: 'smtp.gmail.com',
+      port: 465,
+      secure: true,
+      auth: {
+        user: process.env.GMAIL_USER,
+        pass: process.env.GMAIL_APP_PASSWORD
+      },
+      tls: {
+        rejectUnauthorized: false
+      }
+    });
+    
+    const info = await transporter.sendMail({
+      from: `"Casa Musical Buena Melodía J&G" <${process.env.GMAIL_USER}>`,
+      to,
+      subject: `Factura electrónica ${numeroFactura} - Buena Melodía J&G`,
+      html: `
+        <p>Estimado/a <b>${clienteNombre ?? 'Cliente'}</b>,</p>
+        <p>Adjunto encontrará el comprobante electrónico autorizado por el SRI.</p>
+        <ul>
+          <li><b>Factura:</b> ${numeroFactura}</li>
+          <li><b>N° Autorización SRI:</b> ${numeroAutorizacion}</li>
+        </ul>
+        <p>Gracias por su compra.</p>
+        <p style="color:#888;font-size:12px">Casa Musical Buena Melodía J&amp;G</p>
+      `,
+      attachments: [
+        {
+          filename: `Factura-${numeroFactura}.xml`,
+          content: xmlFirmado,
+          contentType: 'application/xml'
+        },
+      ],
+    });
+
+    return Boolean(info?.messageId);
+
+  } catch (error) {
+    console.error('Error enviando correo:', error);
+    return false;
+  }
 }
 
 // =============== ENDPOINT PRINCIPAL ===============
@@ -413,8 +457,6 @@ app.post('/procesar-factura', async (req, res) => {
 
     const { xml, certBase64, certPassword, ambiente, claveAcceso, email, clienteNombre, numeroFactura } = req.body;
 
-    const cacheEnvios = global.cacheEnvios || (global.cacheEnvios = new Map());
-
     if (cacheEnvios.has(claveAcceso)) {
       return res.json({
         ok: false,
@@ -422,8 +464,10 @@ app.post('/procesar-factura', async (req, res) => {
         error: 'Esta factura ya fue procesada en este servidor'
       });
     }
-    cacheEnvios.set(claveAcceso, Date.now());
-
+    cacheEnvios.set(claveAcceso, {
+      estado: 'PROCESANDO',
+      tiempo: Date.now()
+    });
     if (!xml || !certBase64 || !certPassword || !ambiente || !claveAcceso) {
       return res.status(400).json({ ok: false, error: 'Faltan parámetros' });
     }
@@ -497,7 +541,10 @@ app.post('/procesar-factura', async (req, res) => {
     // 2. Enviar a recepción
     const recepcion = await enviarRecepcion(xmlFirmado, ambienteSri);
     if (recepcion.estado === 'RECIBIDA' && recepcion.mensajes.length === 0) {
-      cacheEnvios.set(claveAcceso, 'ENVIADO_SRI');
+      cacheEnvios.set(claveAcceso, {
+        estado: 'ENVIADO_SRI',
+        tiempo: cacheEnvios.get(claveAcceso)?.tiempo ?? Date.now()
+      });
     }
     console.log('Respuesta recepción SRI', { numeroFactura, estado: recepcion.estado, mensajes: recepcion.mensajes });
     if (recepcion.estado !== 'RECIBIDA') {
