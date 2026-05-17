@@ -7,6 +7,7 @@ import forge from 'node-forge';
 import { XMLValidator } from 'fast-xml-parser';
 import { createHash } from 'crypto';
 import { signInvoiceXml } from 'ec-sri-invoice-signer';
+import https from 'https';
 
 const app = express();
 app.use(cors());
@@ -285,10 +286,23 @@ async function enviarRecepcion(xmlFirmado, ambiente) {
 </soapenv:Envelope>`;
 
   const url = SRI_URLS[ambiente].recepcion.replace('?wsdl', '');
-  const res = await axios.post(url, soap, {
-    headers: { 'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': '' },
-    timeout: 30000,
-  });
+  const agent = new https.Agent({
+  keepAlive: false,
+  family: 4,
+  minVersion: 'TLSv1.2',
+});
+
+const res = await axios.post(url, soap, {
+  headers: {
+    'Content-Type': 'text/xml; charset=utf-8',
+    SOAPAction: '',
+    'User-Agent': 'NodeJS-SRI-Client',
+  },
+  timeout: 30000,
+  httpsAgent: agent,
+  maxBodyLength: Infinity,
+  maxContentLength: Infinity,
+});
   const estadoMatch = res.data.match(/<estado>(.*?)<\/estado>/);
   return { estado: estadoMatch?.[1] ?? 'DESCONOCIDO', raw: res.data, mensajes: extraerMensajesSri(res.data) };
 }
@@ -319,9 +333,22 @@ async function consultarAutorizacion(claveAcceso, ambiente) {
 </soapenv:Envelope>`;
 
   const url = SRI_URLS[ambiente].autorizacion.replace('?wsdl', '');
+  const agent = new https.Agent({
+    keepAlive: false,
+    family: 4,
+    minVersion: 'TLSv1.2',
+  });
+
   const res = await axios.post(url, soap, {
-    headers: { 'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': '' },
+    headers: {
+      'Content-Type': 'text/xml; charset=utf-8',
+      SOAPAction: '',
+      'User-Agent': 'NodeJS-SRI-Client',
+    },
     timeout: 30000,
+    httpsAgent: agent,
+    maxBodyLength: Infinity,
+    maxContentLength: Infinity,
   });
 
   const doc = new DOMParser().parseFromString(res.data, 'text/xml');
