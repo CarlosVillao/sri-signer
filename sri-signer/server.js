@@ -225,10 +225,6 @@ const key = await crypto.subtle.importKey(
       xmlString,
       'text/xml'
     );
-  xmlDoc.documentElement.setAttribute(
-  'xmlns:ds',
-  'http://www.w3.org/2000/09/xmldsig#'
-  );
 
   // =========================
   // FIRMAR XAdES-BES
