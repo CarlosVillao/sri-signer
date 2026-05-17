@@ -7,6 +7,7 @@ import { XMLValidator } from 'fast-xml-parser';
 import { createHash } from 'crypto';
 import fs from 'fs';
 import { DOMParser } from '@xmldom/xmldom';
+import { SriInvoiceSigner } from 'ec-sri-invoice-signer';
 
 const app = express();
 app.use(cors());
@@ -104,29 +105,18 @@ const newP12Asn1 = forge.pkcs12.toPkcs12Asn1(
 // =============== FIRMADO XAdES-BES REAL ===============
 async function firmarXML(xmlString, p12Buffer, password) {
 
-  const xmlFirmado = await signer.sign(
-    xmlString,
+  const signer = new SriInvoiceSigner(
     p12Buffer,
     password
   );
 
-  console.log(
-    'Tiene Signature:',
-    xmlFirmado.includes('Signature')
+  const xmlFirmado = await signer.sign(
+    xmlString
   );
 
   fs.writeFileSync(
     './debug-firmado.xml',
     xmlFirmado
-  );
-
-  console.log(
-    'Archivo debug-firmado.xml generado'
-  );
-
-  console.log(
-    'XML firmado tamaño:',
-    xmlFirmado.length
   );
 
   return xmlFirmado;
@@ -148,7 +138,6 @@ function diagnosticarXml(xml) {
   const limpio = limpiarXml(xml);
   const validation = XMLValidator.validate(limpio);
   const namespaces = limpio.match(/\sxmlns(?::\w+)?=/g) ?? [];
-  const rootMatch = limpio.match(/<factura\s+([^>]*)>/i);
   const ambiente = getTag(limpio, 'ambiente');
   const clave = getTag(limpio, 'claveAcceso');
   const ruc = getTag(limpio, 'ruc');
