@@ -420,10 +420,11 @@ async function enviarCorreo({
       auth: {
         user: process.env.GMAIL_USER,
         pass: process.env.GMAIL_APP_PASSWORD
+      },
+      tls: {
+        rejectUnauthorized: false
       }
     });
-
-    await transporter.verify();
 
     const info = await transporter.sendMail({
       from: `"Casa Musical Buena Melodía J&G" <${process.env.GMAIL_USER}>`,
