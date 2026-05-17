@@ -54,6 +54,12 @@ function prepararP12Vigente(p12Buffer, password) {
       // Verificar que el certificado sea de FIRMA DIGITAL
       const keyUsage = c.getExtension && c.getExtension('keyUsage');
 
+      console.log('KEY USAGE', {
+        digitalSignature: keyUsage?.digitalSignature,
+        nonRepudiation: keyUsage?.nonRepudiation,
+        keyEncipherment: keyUsage?.keyEncipherment,
+      });
+
       const permiteFirma =
         keyUsage &&
         (
