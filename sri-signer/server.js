@@ -47,13 +47,22 @@ function prepararP12Vigente(p12Buffer, password) {
     .map((b) => b.cert)
     .filter((c) => c && c.validity.notBefore <= now && c.validity.notAfter > now)
     .filter((c) => {
-      // Excluir certificados de CA (Authority): los certificados de firma personal
-      // tienen el shortName "CN" con el nombre de la persona y NO son CA.
+      // Excluir certificados CA
       const bc = c.getExtension && c.getExtension('basicConstraints');
-      return !(bc && bc.cA);
-    })
-    // Más reciente primero
-    .sort((a, b) => b.validity.notAfter - a.validity.notAfter);
+      if (bc && bc.cA) return false;
+
+      // Verificar que el certificado sea de FIRMA DIGITAL
+      const keyUsage = c.getExtension && c.getExtension('keyUsage');
+
+      const permiteFirma =
+        keyUsage &&
+        (
+          keyUsage.digitalSignature ||
+          keyUsage.nonRepudiation
+        );
+
+      return permiteFirma;
+    }).sort((a, b) => b.validity.notAfter - a.validity.notAfter);
 
   if (candidatos.length === 0) {
     throw new Error('El .p12 no contiene ningún certificado de firma vigente. Todos están vencidos o son sólo CAs.');
