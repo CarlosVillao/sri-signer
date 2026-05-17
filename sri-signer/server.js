@@ -404,7 +404,7 @@ const soap = `<?xml version="1.0" encoding="UTF-8"?>
   <soapenv:Header/>
   <soapenv:Body>
     <ec:validarComprobante>
-      <xml>${xmlFirmado}</xml>
+      <xml><![CDATA[${xmlFirmado}]]></xml>
     </ec:validarComprobante>
   </soapenv:Body>
 </soapenv:Envelope>`;
@@ -458,7 +458,7 @@ const soap = `<?xml version="1.0" encoding="UTF-8"?>
         extraerMensajesSri(res.data)
     };
 
-  } catch (error) {
+  }   } catch (error) {
 
     console.error(
       'ERROR SRI RECEPCION:',
@@ -466,8 +466,33 @@ const soap = `<?xml version="1.0" encoding="UTF-8"?>
       error.message
     );
 
-    throw error;
+    // SI EL SRI RESPONDIÓ CON XML DE ERROR
+    if (error.response?.data) {
+
+      console.log('SOAP ERROR DEL SRI:');
+      console.log(error.response.data);
+
+      return {
+        estado: 'DEVUELTA',
+        raw: error.response.data,
+        mensajes: extraerMensajesSri(error.response.data)
+      };
+    }
+
+    // SI FUE ERROR DE RED/TLS
+    return {
+      estado: 'ERROR_RED',
+      raw: error.message,
+      mensajes: [
+        {
+          identificador: error.code || 'NETWORK',
+          mensaje: error.message,
+          tipo: 'ERROR'
+        }
+      ]
+    };
   }
+}
 }
 
 function extraerMensajesSri(rawXml) {
