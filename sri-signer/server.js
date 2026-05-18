@@ -408,48 +408,77 @@ async function enviarCorreo({
   numeroAutorizacion,
   xmlFirmado
 }) {
-  try {
-    if (!to || !process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
-      return false;
-    }
+  if (!to || !process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
+    return false;
+  }
 
-    const transporter = nodemailer.createTransport({
-      host: 'smtp.gmail.com',
-      port: 587,
-      secure: false,
-      auth: {
-        user: process.env.GMAIL_USER,
-        pass: process.env.GMAIL_APP_PASSWORD
-      },
-      tls: {
-        rejectUnauthorized: false
-      }
-    });
+  const MAX_RETRIES = 3;
+  const INITIAL_DELAY_MS = 2000;
 
-    const info = await transporter.sendMail({
-      from: `"Casa Musical Buena Melodía J&G" <${process.env.GMAIL_USER}>`,
-      to,
-      subject: `Factura electrónica ${numeroFactura} - SRI`,
-      html: `
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const transporter = nodemailer.createTransport({
+        host: 'smtp.gmail.com',
+        port: 587,
+        secure: false,
+        auth: {
+          user: process.env.GMAIL_USER,
+          pass: process.env.GMAIL_APP_PASSWORD
+        },
+        tls: {
+          rejectUnauthorized: false
+        },
+        connectionTimeout: 30000,
+        greetingTimeout: 30000,
+        socketTimeout: 30000
+      });
+
+      const info = await transporter.sendMail({
+        from: `"Casa Musical Buena Melodía J&G" <${process.env.GMAIL_USER}>`,
+        to,
+        subject: `Factura electrónica ${numeroFactura} - SRI`,
+        html: `
         <p>Estimado/a <b>${clienteNombre ?? 'Cliente'}</b>,</p>
         <p>Su factura <b>${numeroFactura}</b> ha sido autorizada por el SRI.</p>
         <p><b>N° Autorización:</b> ${numeroAutorizacion}</p>
       `,
-      attachments: [
-        {
-          filename: `Factura-${numeroFactura}.xml`,
-          content: xmlFirmado,
-          contentType: 'application/xml'
-        }
-      ]
-    });
+        attachments: [
+          {
+            filename: `Factura-${numeroFactura}.xml`,
+            content: xmlFirmado,
+            contentType: 'application/xml'
+          }
+        ]
+      });
 
-    return !!info.messageId;
+      console.log(`Correo enviado correctamente en intento ${attempt}:`, info.messageId);
+      return !!info.messageId;
 
-  } catch (error) {
-    console.error('ERROR GMAIL:', error.message);
-    return false;
+    } catch (error) {
+      const isConnectionError =
+        error.code === 'ECONNREFUSED' ||
+        error.code === 'ETIMEDOUT' ||
+        error.code === 'ENOTFOUND' ||
+        error.code === 'ECONNRESET' ||
+        error.command === 'CONN';
+
+      if (isConnectionError) {
+        console.error(`ERROR GMAIL (conexión SMTP) intento ${attempt}/${MAX_RETRIES}: [${error.code ?? error.command}] ${error.message}`);
+      } else {
+        console.error(`ERROR GMAIL intento ${attempt}/${MAX_RETRIES}: ${error.message}`);
+      }
+
+      if (attempt < MAX_RETRIES) {
+        const delay = INITIAL_DELAY_MS * Math.pow(2, attempt - 1);
+        console.log(`Reintentando envío de correo en ${delay}ms...`);
+        await new Promise(r => setTimeout(r, delay));
+      } else {
+        console.error(`ERROR GMAIL: Se agotaron los ${MAX_RETRIES} intentos. El correo no pudo enviarse.`);
+      }
+    }
   }
+
+  return false;
 }
 // =============== ENDPOINT PRINCIPAL ===============
 app.post('/procesar-factura', async (req, res) => {
@@ -575,14 +604,7 @@ app.post('/procesar-factura', async (req, res) => {
       });
     }
 
-    // 4. Enviar correo si hay destinatario
-    let correoEnviado = false;
-    try {
-      correoEnviado = await enviarCorreo({ to: email, clienteNombre, numeroFactura, numeroAutorizacion: autorizacion.numeroAutorizacion, xmlFirmado });
-    } catch (e) {
-      console.error('Error enviando correo:', e.message);
-    }
-
+    // 4. Responder al cliente inmediatamente; el correo se envía en segundo plano
     res.json({
       ok: true,
       estado: 'AUTORIZADO',
@@ -592,8 +614,19 @@ app.post('/procesar-factura', async (req, res) => {
       xmlFirmado,
       diagnosticoXml: diagnosticoXml.resumen,
       diagnosticoFirmado: diagnosticoFirmado.resumen,
-      correoEnviado,
+      correoEnviado: !!email,
     });
+
+    // Enviar correo en segundo plano (no bloquea la respuesta)
+    if (email) {
+      enviarCorreo({ to: email, clienteNombre, numeroFactura, numeroAutorizacion: autorizacion.numeroAutorizacion, xmlFirmado })
+        .then((enviado) => {
+          console.log(`Correo background para factura ${numeroFactura}: ${enviado ? 'enviado' : 'fallido'}`);
+        })
+        .catch((e) => {
+          console.error(`Error inesperado en envío background de correo para factura ${numeroFactura}:`, e.message);
+        });
+    }
   } catch (err) {
     console.error('Error procesando factura:', err);
     res.status(500).json({ ok: false, error: err.message ?? 'Error interno' });
