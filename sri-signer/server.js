@@ -469,22 +469,28 @@ async function enviarCorreoResend({
     return false;
   }
 
+  // TESTING MODE: Resend only allows sending to the verified address until a
+  // custom domain is configured. The original client email is included in the
+  // body so it remains visible during testing.
+  const TESTING_EMAIL = 'aaronvillao2003@gmail.com';
+
   const MAX_RETRIES = 3;
   const INITIAL_DELAY_MS = 2000;
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      console.log(`[Resend] Enviando correo intento ${attempt}/${MAX_RETRIES} → ${to}`);
+      console.log(`[Resend] Enviando correo intento ${attempt}/${MAX_RETRIES} → ${TESTING_EMAIL} (cliente: ${to})`);
       const res = await axios.post(
         'https://api.resend.com/emails',
         {
           from: 'noreply@resend.dev',
-          to,
+          to: TESTING_EMAIL,
           subject: `Factura electrónica ${numeroFactura} - SRI`,
           html: `
             <p>Estimado/a <b>${clienteNombre ?? 'Cliente'}</b>,</p>
             <p>Su factura <b>${numeroFactura}</b> ha sido autorizada por el SRI.</p>
             <p><b>N° Autorización:</b> ${numeroAutorizacion}</p>
+            <p><b>Email original del cliente:</b> ${to}</p>
           `,
           attachments: [
             {
