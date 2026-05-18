@@ -1,6 +1,6 @@
 {
   "name": "bm-sri-signer",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Firmador XAdES-BES estable para Railway + cliente SOAP SRI Ecuador + envío de correos",
   "main": "server.js",
   "type": "module",

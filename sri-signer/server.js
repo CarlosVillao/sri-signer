@@ -7,13 +7,49 @@ import forge from 'node-forge';
 import { XMLValidator } from 'fast-xml-parser';
 import { createHash } from 'crypto';
 import { signInvoiceXml } from 'ec-sri-invoice-signer';
+import https from 'https';
+
+// Agente HTTPS sin keep-alive: los servidores del SRI cierran conexiones
+// inactivas y provocan ECONNRESET si se reutiliza el socket.
+const sriHttpsAgent = new https.Agent({
+  keepAlive: false,
+  rejectUnauthorized: false, // el SRI a veces presenta cadena incompleta
+});
+
+async function postSriConReintentos(url, soap, { intentos = 4, timeout = 45000 } = {}) {
+  let ultimoError;
+  for (let i = 1; i <= intentos; i++) {
+    try {
+      return await axios.post(url, soap, {
+        headers: {
+          'Content-Type': 'text/xml; charset=utf-8',
+          SOAPAction: '',
+          Connection: 'close',
+        },
+        timeout,
+        httpsAgent: sriHttpsAgent,
+        maxRedirects: 0,
+        decompress: true,
+      });
+    } catch (err) {
+      ultimoError = err;
+      const code = err?.code || '';
+      const reintentable = ['ECONNRESET', 'ETIMEDOUT', 'ECONNABORTED', 'EAI_AGAIN', 'ENOTFOUND', 'EPIPE'].includes(code)
+        || /socket hang up/i.test(err?.message || '');
+      console.warn(`Intento ${i}/${intentos} fallido contra SRI`, { code, msg: err?.message, reintentable });
+      if (!reintentable || i === intentos) throw err;
+      await new Promise((r) => setTimeout(r, 1500 * i));
+    }
+  }
+  throw ultimoError;
+}
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '15mb' }));
 
 const PORT = process.env.PORT || 3000;
-const SERVICE_VERSION = '1.0.5-correo-fix';
+const SERVICE_VERSION = '1.0.6-econnreset-retry';
 
 // URLs SRI Ecuador
 const SRI_URLS = {
@@ -285,10 +321,7 @@ async function enviarRecepcion(xmlFirmado, ambiente) {
 </soapenv:Envelope>`;
 
   const url = SRI_URLS[ambiente].recepcion.replace('?wsdl', '');
-  const res = await axios.post(url, soap, {
-    headers: { 'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': '' },
-    timeout: 30000,
-  });
+  const res = await postSriConReintentos(url, soap);
   const estadoMatch = res.data.match(/<estado>(.*?)<\/estado>/);
   return { estado: estadoMatch?.[1] ?? 'DESCONOCIDO', raw: res.data, mensajes: extraerMensajesSri(res.data) };
 }
@@ -319,10 +352,7 @@ async function consultarAutorizacion(claveAcceso, ambiente) {
 </soapenv:Envelope>`;
 
   const url = SRI_URLS[ambiente].autorizacion.replace('?wsdl', '');
-  const res = await axios.post(url, soap, {
-    headers: { 'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': '' },
-    timeout: 30000,
-  });
+  const res = await postSriConReintentos(url, soap);
 
   const doc = new DOMParser().parseFromString(res.data, 'text/xml');
   const estado = doc.getElementsByTagName('estado')[0]?.textContent ?? 'NO_AUTORIZADO';
