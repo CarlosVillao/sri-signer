@@ -322,26 +322,54 @@ async function enviarRecepcion(xmlFirmado, ambiente) {
   const url = SRI_URLS[ambiente].recepcion.replace('?wsdl', '');
   const agent = new https.Agent({
     keepAlive: true,   // 🔥 CRÍTICO
-    family: 4,
     minVersion: 'TLSv1.2',
     rejectUnauthorized: false
   });
 
-  const res = await axios.post(url, soap, {
-    headers: {
-      'Content-Type': 'text/xml; charset=utf-8',
-      SOAPAction: '',
-      'User-Agent': 'NodeJS-SRI-Client',
-      Connection: 'close'
-    },
-    timeout: 120000,
-    httpsAgent: agent,
-    maxBodyLength: Infinity,
-    maxContentLength: Infinity,
-    validateStatus: () => true
-  });
-  const estadoMatch = res.data.match(/<estado>(.*?)<\/estado>/);
-  return { estado: estadoMatch?.[1] ?? 'DESCONOCIDO', raw: res.data, mensajes: extraerMensajesSri(res.data) };
+  const MAX_RETRIES = 3;
+  const INITIAL_DELAY_MS = 2000;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      console.log(`[enviarRecepcion] Intento ${attempt}/${MAX_RETRIES} → ${url}`);
+      const res = await axios.post(url, soap, {
+        headers: {
+          'Content-Type': 'text/xml; charset=utf-8',
+          SOAPAction: '',
+          'User-Agent': 'NodeJS-SRI-Client',
+          Connection: 'close'
+        },
+        timeout: 120000,
+        httpsAgent: agent,
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+        validateStatus: () => true
+      });
+      const estadoMatch = res.data.match(/<estado>(.*?)<\/estado>/);
+      return { estado: estadoMatch?.[1] ?? 'DESCONOCIDO', raw: res.data, mensajes: extraerMensajesSri(res.data) };
+    } catch (error) {
+      const isConnectionError =
+        error.code === 'ECONNRESET' ||
+        error.code === 'ETIMEDOUT' ||
+        error.code === 'ECONNREFUSED' ||
+        error.code === 'ENOTFOUND';
+
+      if (isConnectionError) {
+        console.error(`[enviarRecepcion] Error de conexión intento ${attempt}/${MAX_RETRIES}: [${error.code}] ${error.message}`);
+      } else {
+        console.error(`[enviarRecepcion] Error intento ${attempt}/${MAX_RETRIES}: ${error.message}`);
+      }
+
+      if (attempt < MAX_RETRIES) {
+        const delay = INITIAL_DELAY_MS * Math.pow(2, attempt - 1);
+        console.log(`[enviarRecepcion] Reintentando en ${delay}ms...`);
+        await new Promise(r => setTimeout(r, delay));
+      } else {
+        console.error(`[enviarRecepcion] Se agotaron los ${MAX_RETRIES} intentos. Último error: [${error.code ?? 'ERR'}] ${error.message}`);
+        throw error;
+      }
+    }
+  }
 }
 
 function extraerMensajesSri(rawXml) {
@@ -372,32 +400,60 @@ async function consultarAutorizacion(claveAcceso, ambiente) {
   const url = SRI_URLS[ambiente].autorizacion.replace('?wsdl', '');
   const agent = new https.Agent({
     keepAlive: true,   // 🔥 CRÍTICO
-    family: 4,
     minVersion: 'TLSv1.2',
     rejectUnauthorized: false
   });
 
-  const res = await axios.post(url, soap, {
-    headers: {
-      'Content-Type': 'text/xml; charset=utf-8',
-      SOAPAction: '',
-      'User-Agent': 'NodeJS-SRI-Client',
-      Connection: 'close'
-    },
-    timeout: 120000,
-    httpsAgent: agent,
-    maxBodyLength: Infinity,
-    maxContentLength: Infinity,
-    validateStatus: () => true
-  });
+  const MAX_RETRIES = 3;
+  const INITIAL_DELAY_MS = 2000;
 
-  const doc = new DOMParser().parseFromString(res.data, 'text/xml');
-  const estado = doc.getElementsByTagName('estado')[0]?.textContent ?? 'NO_AUTORIZADO';
-  const numAut = doc.getElementsByTagName('numeroAutorizacion')[0]?.textContent ?? null;
-  const fechaAut = doc.getElementsByTagName('fechaAutorizacion')[0]?.textContent ?? null;
-  const mensajes = extraerMensajesSri(res.data);
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      console.log(`[consultarAutorizacion] Intento ${attempt}/${MAX_RETRIES} → ${url}`);
+      const res = await axios.post(url, soap, {
+        headers: {
+          'Content-Type': 'text/xml; charset=utf-8',
+          SOAPAction: '',
+          'User-Agent': 'NodeJS-SRI-Client',
+          Connection: 'close'
+        },
+        timeout: 120000,
+        httpsAgent: agent,
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+        validateStatus: () => true
+      });
 
-  return { estado, numeroAutorizacion: numAut, fechaAutorizacion: fechaAut, mensajes, raw: res.data };
+      const doc = new DOMParser().parseFromString(res.data, 'text/xml');
+      const estado = doc.getElementsByTagName('estado')[0]?.textContent ?? 'NO_AUTORIZADO';
+      const numAut = doc.getElementsByTagName('numeroAutorizacion')[0]?.textContent ?? null;
+      const fechaAut = doc.getElementsByTagName('fechaAutorizacion')[0]?.textContent ?? null;
+      const mensajes = extraerMensajesSri(res.data);
+
+      return { estado, numeroAutorizacion: numAut, fechaAutorizacion: fechaAut, mensajes, raw: res.data };
+    } catch (error) {
+      const isConnectionError =
+        error.code === 'ECONNRESET' ||
+        error.code === 'ETIMEDOUT' ||
+        error.code === 'ECONNREFUSED' ||
+        error.code === 'ENOTFOUND';
+
+      if (isConnectionError) {
+        console.error(`[consultarAutorizacion] Error de conexión intento ${attempt}/${MAX_RETRIES}: [${error.code}] ${error.message}`);
+      } else {
+        console.error(`[consultarAutorizacion] Error intento ${attempt}/${MAX_RETRIES}: ${error.message}`);
+      }
+
+      if (attempt < MAX_RETRIES) {
+        const delay = INITIAL_DELAY_MS * Math.pow(2, attempt - 1);
+        console.log(`[consultarAutorizacion] Reintentando en ${delay}ms...`);
+        await new Promise(r => setTimeout(r, delay));
+      } else {
+        console.error(`[consultarAutorizacion] Se agotaron los ${MAX_RETRIES} intentos. Último error: [${error.code ?? 'ERR'}] ${error.message}`);
+        throw error;
+      }
+    }
+  }
 }
 
 // =============== ENVÍO DE CORREO (Gmail SMTP) ===============
