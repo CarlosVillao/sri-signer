@@ -456,16 +456,16 @@ async function consultarAutorizacion(claveAcceso, ambiente) {
   }
 }
 
-// =============== ENVÍO DE CORREO (Resend HTTP API) ===============
-async function enviarCorreoResend({
+// =============== ENVÍO DE CORREO (Brevo SMTP API) ===============
+async function enviarCorreoBrevo({
   to,
   clienteNombre,
   numeroFactura,
   numeroAutorizacion,
   xmlFirmado
 }) {
-  if (!to || !process.env.RESEND_API_KEY) {
-    console.warn('[Resend] No se envió correo: falta destinatario o RESEND_API_KEY.');
+  if (!to || !process.env.BREVO_API_KEY) {
+    console.warn('[Brevo] No se envió correo: falta destinatario o BREVO_API_KEY.');
     return false;
   }
 
@@ -474,37 +474,44 @@ async function enviarCorreoResend({
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      console.log(`[Resend] Enviando correo intento ${attempt}/${MAX_RETRIES} → ${to}`);
+      console.log(`[Brevo] Enviando correo intento ${attempt}/${MAX_RETRIES} → ${to}`);
       const res = await axios.post(
-        'https://api.resend.com/emails',
+        'https://api.brevo.com/v3/smtp/email',
         {
-          from: 'noreply@resend.dev',
-          to,
+          sender: {
+            name: 'SRI Signer',
+            email: 'noreply@brevo.com'
+          },
+          to: [
+            {
+              email: to,
+              name: clienteNombre ?? 'Cliente'
+            }
+          ],
           subject: `Factura electrónica ${numeroFactura} - SRI`,
-          html: `
+          htmlContent: `
             <p>Estimado/a <b>${clienteNombre ?? 'Cliente'}</b>,</p>
             <p>Su factura <b>${numeroFactura}</b> ha sido autorizada por el SRI.</p>
             <p><b>N° Autorización:</b> ${numeroAutorizacion}</p>
           `,
-          attachments: [
+          attachment: [
             {
-              filename: `Factura-${numeroFactura}.xml`,
-              content: Buffer.from(xmlFirmado, 'utf8').toString('base64'),
-              content_type: 'application/xml'
+              name: `Factura-${numeroFactura}.xml`,
+              content: Buffer.from(xmlFirmado, 'utf8').toString('base64')
             }
           ]
         },
         {
           headers: {
-            'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+            'api-key': process.env.BREVO_API_KEY,
             'Content-Type': 'application/json'
           },
           timeout: 30000
         }
       );
 
-      console.log(`[Resend] Correo enviado correctamente en intento ${attempt}:`, res.data?.id);
-      return !!(res.data?.id);
+      console.log(`[Brevo] Correo enviado correctamente en intento ${attempt}:`, res.data?.messageId);
+      return !!(res.data?.messageId);
 
     } catch (error) {
       const isConnectionError =
@@ -514,19 +521,19 @@ async function enviarCorreoResend({
         error.code === 'ECONNRESET';
 
       if (isConnectionError) {
-        console.error(`[Resend] Error de conexión intento ${attempt}/${MAX_RETRIES}: [${error.code}] ${error.message}`);
+        console.error(`[Brevo] Error de conexión intento ${attempt}/${MAX_RETRIES}: [${error.code}] ${error.message}`);
       } else {
         const status = error.response?.status;
         const detail = error.response?.data ? JSON.stringify(error.response.data) : error.message;
-        console.error(`[Resend] Error intento ${attempt}/${MAX_RETRIES}${status ? ` (HTTP ${status})` : ''}: ${detail}`);
+        console.error(`[Brevo] Error intento ${attempt}/${MAX_RETRIES}${status ? ` (HTTP ${status})` : ''}: ${detail}`);
       }
 
       if (attempt < MAX_RETRIES) {
         const delay = INITIAL_DELAY_MS * Math.pow(2, attempt - 1);
-        console.log(`[Resend] Reintentando en ${delay}ms...`);
+        console.log(`[Brevo] Reintentando en ${delay}ms...`);
         await new Promise(r => setTimeout(r, delay));
       } else {
-        console.error(`[Resend] Se agotaron los ${MAX_RETRIES} intentos. El correo no pudo enviarse.`);
+        console.error(`[Brevo] Se agotaron los ${MAX_RETRIES} intentos. El correo no pudo enviarse.`);
       }
     }
   }
@@ -672,7 +679,7 @@ app.post('/procesar-factura', async (req, res) => {
 
     // Enviar correo en segundo plano (no bloquea la respuesta)
     if (email) {
-      enviarCorreoResend({ to: email, clienteNombre, numeroFactura, numeroAutorizacion: autorizacion.numeroAutorizacion, xmlFirmado })
+      enviarCorreoBrevo({ to: email, clienteNombre, numeroFactura, numeroAutorizacion: autorizacion.numeroAutorizacion, xmlFirmado })
         .then((enviado) => {
           console.log(`Correo background para factura ${numeroFactura}: ${enviado ? 'enviado' : 'fallido'}`);
         })
