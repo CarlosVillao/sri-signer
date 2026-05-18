@@ -2,38 +2,18 @@ import express from 'express';
 import cors from 'cors';
 import { DOMParser } from '@xmldom/xmldom';
 import axios from 'axios';
+import nodemailer from 'nodemailer';
 import forge from 'node-forge';
 import { XMLValidator } from 'fast-xml-parser';
 import { createHash } from 'crypto';
 import { signInvoiceXml } from 'ec-sri-invoice-signer';
-import https from 'https'; 
-import dns from 'dns';
-import nodemailer from 'nodemailer';
-
-dns.setDefaultResultOrder('ipv4first');
-
-process.env.NODE_OPTIONS = '--dns-result-order=ipv4first';
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '15mb' }));
 
 const PORT = process.env.PORT || 3000;
-const SERVICE_VERSION = '1.0.4-railway-stable-sri';
-const cacheEnvios = global.cacheEnvios || (global.cacheEnvios = new Map());
-
-setInterval(() => {
-  const now = Date.now();
-  const TTL = 10 * 60 * 1000;
-
-  for (const [key, value] of cacheEnvios.entries()) {
-    if (!value?.tiempo) continue; // 👈 protección
-
-    if (now - value.tiempo > TTL) {
-      cacheEnvios.delete(key);
-    }
-  }
-}, 5 * 60 * 1000);
+const SERVICE_VERSION = '1.0.5-correo-fix';
 
 // URLs SRI Ecuador
 const SRI_URLS = {
@@ -66,28 +46,13 @@ function prepararP12Vigente(p12Buffer, password) {
     .map((b) => b.cert)
     .filter((c) => c && c.validity.notBefore <= now && c.validity.notAfter > now)
     .filter((c) => {
-      // Excluir certificados CA
+      // Excluir certificados de CA (Authority): los certificados de firma personal
+      // tienen el shortName "CN" con el nombre de la persona y NO son CA.
       const bc = c.getExtension && c.getExtension('basicConstraints');
-      if (bc && bc.cA) return false;
-
-      // Verificar que el certificado sea de FIRMA DIGITAL
-      const keyUsage = c.getExtension && c.getExtension('keyUsage');
-
-      console.log('KEY USAGE', {
-        digitalSignature: keyUsage?.digitalSignature,
-        nonRepudiation: keyUsage?.nonRepudiation,
-        keyEncipherment: keyUsage?.keyEncipherment,
-      });
-
-      const permiteFirma =
-        keyUsage &&
-        (
-          keyUsage.digitalSignature ||
-          keyUsage.nonRepudiation
-        );
-
-      return permiteFirma;
-    }).sort((a, b) => b.validity.notAfter - a.validity.notAfter);
+      return !(bc && bc.cA);
+    })
+    // Más reciente primero
+    .sort((a, b) => b.validity.notAfter - a.validity.notAfter);
 
   if (candidatos.length === 0) {
     throw new Error('El .p12 no contiene ningún certificado de firma vigente. Todos están vencidos o son sólo CAs.');
@@ -320,25 +285,9 @@ async function enviarRecepcion(xmlFirmado, ambiente) {
 </soapenv:Envelope>`;
 
   const url = SRI_URLS[ambiente].recepcion.replace('?wsdl', '');
-  const agent = new https.Agent({
-    keepAlive: true,   // 🔥 CRÍTICO
-    family: 4,
-    minVersion: 'TLSv1.2',
-    rejectUnauthorized: false
-  });
-
   const res = await axios.post(url, soap, {
-    headers: {
-      'Content-Type': 'text/xml; charset=utf-8',
-      SOAPAction: '',
-      'User-Agent': 'NodeJS-SRI-Client',
-      Connection: 'close'
-    },
-    timeout: 120000,
-    httpsAgent: agent,
-    maxBodyLength: Infinity,
-    maxContentLength: Infinity,
-    validateStatus: () => true
+    headers: { 'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': '' },
+    timeout: 30000,
   });
   const estadoMatch = res.data.match(/<estado>(.*?)<\/estado>/);
   return { estado: estadoMatch?.[1] ?? 'DESCONOCIDO', raw: res.data, mensajes: extraerMensajesSri(res.data) };
@@ -370,25 +319,9 @@ async function consultarAutorizacion(claveAcceso, ambiente) {
 </soapenv:Envelope>`;
 
   const url = SRI_URLS[ambiente].autorizacion.replace('?wsdl', '');
-  const agent = new https.Agent({
-    keepAlive: true,   // 🔥 CRÍTICO
-    family: 4,
-    minVersion: 'TLSv1.2',
-    rejectUnauthorized: false
-  });
-
   const res = await axios.post(url, soap, {
-    headers: {
-      'Content-Type': 'text/xml; charset=utf-8',
-      SOAPAction: '',
-      'User-Agent': 'NodeJS-SRI-Client',
-      Connection: 'close'
-    },
-    timeout: 120000,
-    httpsAgent: agent,
-    maxBodyLength: Infinity,
-    maxContentLength: Infinity,
-    validateStatus: () => true
+    headers: { 'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': '' },
+    timeout: 30000,
   });
 
   const doc = new DOMParser().parseFromString(res.data, 'text/xml');
@@ -401,73 +334,87 @@ async function consultarAutorizacion(claveAcceso, ambiente) {
 }
 
 // =============== ENVÍO DE CORREO (Gmail SMTP) ===============
-async function enviarCorreo({
-  to,
-  clienteNombre,
-  numeroFactura,
-  numeroAutorizacion,
-  xmlFirmado
-}) {
-  try {
-    if (!to || !process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
-      return false;
-    }
-
-    const transporter = nodemailer.createTransport({
-      host: 'smtp.gmail.com',
-      port: 587,
-      secure: false,
-      auth: {
-        user: process.env.GMAIL_USER,
-        pass: process.env.GMAIL_APP_PASSWORD
-      },
-      tls: {
-        rejectUnauthorized: false
-      }
-    });
-
-    const info = await transporter.sendMail({
-      from: `"Casa Musical Buena Melodía J&G" <${process.env.GMAIL_USER}>`,
-      to,
-      subject: `Factura electrónica ${numeroFactura} - SRI`,
-      html: `
-        <p>Estimado/a <b>${clienteNombre ?? 'Cliente'}</b>,</p>
-        <p>Su factura <b>${numeroFactura}</b> ha sido autorizada por el SRI.</p>
-        <p><b>N° Autorización:</b> ${numeroAutorizacion}</p>
-      `,
-      attachments: [
-        {
-          filename: `Factura-${numeroFactura}.xml`,
-          content: xmlFirmado,
-          contentType: 'application/xml'
-        }
-      ]
-    });
-
-    return !!info.messageId;
-
-  } catch (error) {
-    console.error('ERROR GMAIL:', error.message);
-    return false;
+function construirTransporter() {
+  const user = (process.env.GMAIL_USER ?? '').trim();
+  // Google muestra el App Password como "xxxx xxxx xxxx xxxx" -> hay que quitar espacios o falla EAUTH.
+  const pass = (process.env.GMAIL_APP_PASSWORD ?? '').replace(/\s+/g, '');
+  if (!user || !pass) {
+    const faltantes = [];
+    if (!user) faltantes.push('GMAIL_USER');
+    if (!pass) faltantes.push('GMAIL_APP_PASSWORD');
+    throw new Error(`Faltan variables de entorno en Railway: ${faltantes.join(', ')}. Configúralas en Railway > Variables y vuelve a desplegar.`);
   }
+  if (pass.length !== 16) {
+    console.warn(`[correo] GMAIL_APP_PASSWORD tiene ${pass.length} caracteres (se esperaban 16). Verifica que sea un App Password de Google, no la contraseña normal.`);
+  }
+  return nodemailer.createTransport({
+    host: 'smtp.gmail.com',
+    port: 465,
+    secure: true,
+    auth: { user, pass },
+  });
 }
+
+async function enviarCorreo({ to, clienteNombre, numeroFactura, numeroAutorizacion, xmlFirmado, pdfBase64, asunto, mensajeHtml, tipo = 'factura' }) {
+  if (!to) throw new Error('Falta el correo destinatario (campo "email").');
+
+  const transporter = construirTransporter();
+  // Falla rápido si las credenciales son inválidas (en vez de timeout al enviar).
+  await transporter.verify();
+
+  const fromUser = (process.env.GMAIL_USER ?? '').trim();
+  const subject = asunto
+    ?? (tipo === 'orden'
+      ? `Orden de reparación ${numeroFactura} - Buena Melodía J&G`
+      : `Factura electrónica ${numeroFactura} - Buena Melodía J&G`);
+
+  const htmlDefault = tipo === 'orden'
+    ? `
+      <p>Estimado/a <b>${clienteNombre ?? 'Cliente'}</b>,</p>
+      <p>Adjunto encontrará el comprobante de la orden de reparación <b>${numeroFactura}</b>.</p>
+      <p>Le mantendremos informado sobre el avance del trabajo.</p>
+      <p style="color:#888;font-size:12px">Casa Musical Buena Melodía J&amp;G</p>
+    `
+    : `
+      <p>Estimado/a <b>${clienteNombre ?? 'Cliente'}</b>,</p>
+      <p>Adjunto encontrará el comprobante electrónico autorizado por el SRI.</p>
+      <ul>
+        <li><b>Factura:</b> ${numeroFactura}</li>
+        ${numeroAutorizacion ? `<li><b>N° Autorización SRI:</b> ${numeroAutorizacion}</li>` : ''}
+      </ul>
+      <p>Gracias por su compra.</p>
+      <p style="color:#888;font-size:12px">Casa Musical Buena Melodía J&amp;G</p>
+    `;
+
+  const attachments = [];
+  if (xmlFirmado) {
+    attachments.push({ filename: `Factura-${numeroFactura}.xml`, content: xmlFirmado, contentType: 'application/xml' });
+  }
+  if (pdfBase64) {
+    const clean = String(pdfBase64).replace(/^data:.*?;base64,/i, '').replace(/\s+/g, '');
+    attachments.push({
+      filename: `${tipo === 'orden' ? 'Orden' : 'Factura'}-${numeroFactura}.pdf`,
+      content: Buffer.from(clean, 'base64'),
+      contentType: 'application/pdf',
+    });
+  }
+
+  const info = await transporter.sendMail({
+    from: `"Casa Musical Buena Melodía J&G" <${fromUser}>`,
+    to,
+    subject,
+    html: mensajeHtml ?? htmlDefault,
+    attachments,
+  });
+  console.log('[correo] Enviado', { to, subject, messageId: info.messageId, accepted: info.accepted, rejected: info.rejected });
+  return { ok: true, messageId: info.messageId, accepted: info.accepted, rejected: info.rejected };
+}
+
 // =============== ENDPOINT PRINCIPAL ===============
 app.post('/procesar-factura', async (req, res) => {
   try {
-
     const { xml, certBase64, certPassword, ambiente, claveAcceso, email, clienteNombre, numeroFactura } = req.body;
 
-    if (cacheEnvios.has(claveAcceso)) {
-      return res.json({
-        ok: false,
-        estado: 'DUPLICADA',
-        error: 'Esta factura ya fue procesada en este servidor'
-      });
-    }
-    cacheEnvios.set(claveAcceso, {
-      estado: 'PROCESANDO',
-      tiempo: Date.now()
-    });
     if (!xml || !certBase64 || !certPassword || !ambiente || !claveAcceso) {
       return res.status(400).json({ ok: false, error: 'Faltan parámetros' });
     }
@@ -540,15 +487,8 @@ app.post('/procesar-factura', async (req, res) => {
 
     // 2. Enviar a recepción
     const recepcion = await enviarRecepcion(xmlFirmado, ambienteSri);
-    if (recepcion.estado === 'RECIBIDA' && recepcion.mensajes.length === 0) {
-      cacheEnvios.set(claveAcceso, {
-        estado: 'ENVIADO_SRI',
-        tiempo: cacheEnvios.get(claveAcceso)?.tiempo ?? Date.now()
-      });
-    }
     console.log('Respuesta recepción SRI', { numeroFactura, estado: recepcion.estado, mensajes: recepcion.mensajes });
     if (recepcion.estado !== 'RECIBIDA') {
-      cacheEnvios.delete(claveAcceso);
       return res.json({
         ok: false,
         estado: 'DEVUELTA',
@@ -577,10 +517,15 @@ app.post('/procesar-factura', async (req, res) => {
 
     // 4. Enviar correo si hay destinatario
     let correoEnviado = false;
-    try {
-      correoEnviado = await enviarCorreo({ to: email, clienteNombre, numeroFactura, numeroAutorizacion: autorizacion.numeroAutorizacion, xmlFirmado });
-    } catch (e) {
-      console.error('Error enviando correo:', e.message);
+    let correoError = null;
+    if (email) {
+      try {
+        const r = await enviarCorreo({ to: email, clienteNombre, numeroFactura, numeroAutorizacion: autorizacion.numeroAutorizacion, xmlFirmado });
+        correoEnviado = r.ok === true;
+      } catch (e) {
+        correoError = e.message;
+        console.error('[correo] Error enviando correo de factura:', e);
+      }
     }
 
     res.json({
@@ -593,10 +538,46 @@ app.post('/procesar-factura', async (req, res) => {
       diagnosticoXml: diagnosticoXml.resumen,
       diagnosticoFirmado: diagnosticoFirmado.resumen,
       correoEnviado,
+      correoError,
     });
   } catch (err) {
     console.error('Error procesando factura:', err);
     res.status(500).json({ ok: false, error: err.message ?? 'Error interno' });
+  }
+});
+
+// =============== ENDPOINTS DE CORREO ===============
+// Reenviar factura ya autorizada o enviar PDF de orden de reparación.
+// body: { to, clienteNombre, numeroFactura, numeroAutorizacion?, xmlFirmado?, pdfBase64?, asunto?, mensajeHtml?, tipo? }
+app.post('/enviar-correo', async (req, res) => {
+  try {
+    const r = await enviarCorreo(req.body ?? {});
+    res.json(r);
+  } catch (err) {
+    console.error('[correo] /enviar-correo falló:', err);
+    res.status(500).json({ ok: false, error: err.message ?? 'Error enviando correo' });
+  }
+});
+
+// Diagnóstico: prueba las credenciales SMTP sin enviar nada (o envía un correo de prueba si se pasa `to`).
+app.get('/test-correo', async (req, res) => {
+  try {
+    const transporter = construirTransporter();
+    await transporter.verify();
+    const to = req.query.to;
+    if (to) {
+      const info = await transporter.sendMail({
+        from: `"Casa Musical Buena Melodía J&G" <${(process.env.GMAIL_USER ?? '').trim()}>`,
+        to,
+        subject: 'Prueba SRI Signer',
+        text: 'Correo de prueba enviado desde sri-signer. Si lo recibes, las credenciales de Gmail están bien configuradas en Railway.',
+      });
+      return res.json({ ok: true, verificado: true, enviado: true, messageId: info.messageId, accepted: info.accepted, rejected: info.rejected });
+    }
+    res.json({ ok: true, verificado: true, mensaje: 'Credenciales válidas. Pasa ?to=correo@ejemplo.com para enviar un correo de prueba.' });
+  } catch (err) {
+    console.error('[correo] /test-correo falló:', err);
+    res.status(500).json({ ok: false, error: err.message ?? 'No se pudo conectar a Gmail SMTP', code: err.code, command: err.command });
   }
 });
 
