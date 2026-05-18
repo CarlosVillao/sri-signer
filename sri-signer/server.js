@@ -8,7 +8,7 @@ import { createHash } from 'crypto';
 import { signInvoiceXml } from 'ec-sri-invoice-signer';
 import https from 'https'; 
 import dns from 'dns';
-import nodemailer from 'nodemailer';
+
 
 dns.setDefaultResultOrder('ipv4first');
 
@@ -456,15 +456,16 @@ async function consultarAutorizacion(claveAcceso, ambiente) {
   }
 }
 
-// =============== ENVÍO DE CORREO (Gmail SMTP) ===============
-async function enviarCorreo({
+// =============== ENVÍO DE CORREO (Resend HTTP API) ===============
+async function enviarCorreoResend({
   to,
   clienteNombre,
   numeroFactura,
   numeroAutorizacion,
   xmlFirmado
 }) {
-  if (!to || !process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
+  if (!to || !process.env.RESEND_API_KEY) {
+    console.warn('[Resend] No se envió correo: falta destinatario o RESEND_API_KEY.');
     return false;
   }
 
@@ -473,63 +474,59 @@ async function enviarCorreo({
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const transporter = nodemailer.createTransport({
-        host: 'smtp.gmail.com',
-        port: 587,
-        secure: false,
-        auth: {
-          user: process.env.GMAIL_USER,
-          pass: process.env.GMAIL_APP_PASSWORD
+      console.log(`[Resend] Enviando correo intento ${attempt}/${MAX_RETRIES} → ${to}`);
+      const res = await axios.post(
+        'https://api.resend.com/emails',
+        {
+          from: 'noreply@resend.dev',
+          to,
+          subject: `Factura electrónica ${numeroFactura} - SRI`,
+          html: `
+            <p>Estimado/a <b>${clienteNombre ?? 'Cliente'}</b>,</p>
+            <p>Su factura <b>${numeroFactura}</b> ha sido autorizada por el SRI.</p>
+            <p><b>N° Autorización:</b> ${numeroAutorizacion}</p>
+          `,
+          attachments: [
+            {
+              filename: `Factura-${numeroFactura}.xml`,
+              content: Buffer.from(xmlFirmado, 'utf8').toString('base64'),
+              content_type: 'application/xml'
+            }
+          ]
         },
-        tls: {
-          rejectUnauthorized: false
-        },
-        connectionTimeout: 30000,
-        greetingTimeout: 30000,
-        socketTimeout: 30000
-      });
+        {
+          headers: {
+            'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 30000
+        }
+      );
 
-      const info = await transporter.sendMail({
-        from: `"Casa Musical Buena Melodía J&G" <${process.env.GMAIL_USER}>`,
-        to,
-        subject: `Factura electrónica ${numeroFactura} - SRI`,
-        html: `
-        <p>Estimado/a <b>${clienteNombre ?? 'Cliente'}</b>,</p>
-        <p>Su factura <b>${numeroFactura}</b> ha sido autorizada por el SRI.</p>
-        <p><b>N° Autorización:</b> ${numeroAutorizacion}</p>
-      `,
-        attachments: [
-          {
-            filename: `Factura-${numeroFactura}.xml`,
-            content: xmlFirmado,
-            contentType: 'application/xml'
-          }
-        ]
-      });
-
-      console.log(`Correo enviado correctamente en intento ${attempt}:`, info.messageId);
-      return !!info.messageId;
+      console.log(`[Resend] Correo enviado correctamente en intento ${attempt}:`, res.data?.id);
+      return !!(res.data?.id);
 
     } catch (error) {
       const isConnectionError =
         error.code === 'ECONNREFUSED' ||
         error.code === 'ETIMEDOUT' ||
         error.code === 'ENOTFOUND' ||
-        error.code === 'ECONNRESET' ||
-        error.command === 'CONN';
+        error.code === 'ECONNRESET';
 
       if (isConnectionError) {
-        console.error(`ERROR GMAIL (conexión SMTP) intento ${attempt}/${MAX_RETRIES}: [${error.code ?? error.command}] ${error.message}`);
+        console.error(`[Resend] Error de conexión intento ${attempt}/${MAX_RETRIES}: [${error.code}] ${error.message}`);
       } else {
-        console.error(`ERROR GMAIL intento ${attempt}/${MAX_RETRIES}: ${error.message}`);
+        const status = error.response?.status;
+        const detail = error.response?.data ? JSON.stringify(error.response.data) : error.message;
+        console.error(`[Resend] Error intento ${attempt}/${MAX_RETRIES}${status ? ` (HTTP ${status})` : ''}: ${detail}`);
       }
 
       if (attempt < MAX_RETRIES) {
         const delay = INITIAL_DELAY_MS * Math.pow(2, attempt - 1);
-        console.log(`Reintentando envío de correo en ${delay}ms...`);
+        console.log(`[Resend] Reintentando en ${delay}ms...`);
         await new Promise(r => setTimeout(r, delay));
       } else {
-        console.error(`ERROR GMAIL: Se agotaron los ${MAX_RETRIES} intentos. El correo no pudo enviarse.`);
+        console.error(`[Resend] Se agotaron los ${MAX_RETRIES} intentos. El correo no pudo enviarse.`);
       }
     }
   }
@@ -675,7 +672,7 @@ app.post('/procesar-factura', async (req, res) => {
 
     // Enviar correo en segundo plano (no bloquea la respuesta)
     if (email) {
-      enviarCorreo({ to: email, clienteNombre, numeroFactura, numeroAutorizacion: autorizacion.numeroAutorizacion, xmlFirmado })
+      enviarCorreoResend({ to: email, clienteNombre, numeroFactura, numeroAutorizacion: autorizacion.numeroAutorizacion, xmlFirmado })
         .then((enviado) => {
           console.log(`Correo background para factura ${numeroFactura}: ${enviado ? 'enviado' : 'fallido'}`);
         })
