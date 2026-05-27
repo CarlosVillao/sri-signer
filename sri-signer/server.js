@@ -146,6 +146,58 @@ function limpiarXml(xml) {
     .trim();
 }
 
+// Escapa los cinco caracteres especiales XML en un valor de texto o atributo.
+function escaparXml(valor) {
+  return String(valor ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+// Aplica escaparXml() al contenido de texto de los campos que provienen de
+// datos ingresados por el usuario (descripciones de productos, nombres de
+// clientes, direcciones, etc.) para evitar que caracteres especiales como
+// comillas dobles rompan la estructura del XML y generen "FIRMA INVALIDA".
+const CAMPOS_USUARIO_XML = [
+  'descripcion',
+  'razonSocial',
+  'nombreComercial',
+  'direccionMatriz',
+  'direccionEstablecimiento',
+  'contribuyenteEspecial',
+  'obligadoContabilidad',
+  'tipoIdentificacionComprador',
+  'guiaRemision',
+  'identificacionComprador',
+  'razonSocialComprador',
+  'direccionComprador',
+  'unidad',
+  'detAdicional',
+  'valor',
+  'informacionAdicional',
+  'nombre',
+];
+
+function escaparCamposXml(xml) {
+  let resultado = xml;
+  for (const campo of CAMPOS_USUARIO_XML) {
+    // Reemplaza el contenido de texto de cada etiqueta conocida.
+    // Solo actúa sobre etiquetas que NO contengan etiquetas hijas (texto plano).
+    resultado = resultado.replace(
+      new RegExp(`(<${campo}(?:\\s[^>]*)?>)([^<]*)(</${campo}>)`, 'g'),
+      (_match, apertura, contenido, cierre) => {
+        // Si el contenido ya está escapado (contiene &amp; &lt; etc.) no doble-escapar.
+        const yaEscapado = /&(?:amp|lt|gt|quot|apos);/.test(contenido);
+        if (yaEscapado) return _match;
+        return `${apertura}${escaparXml(contenido)}${cierre}`;
+      }
+    );
+  }
+  return resultado;
+}
+
 function decodificarBase64(valor) {
   const limpio = String(valor ?? '')
     .replace(/^data:.*?;base64,/i, '')
@@ -562,7 +614,7 @@ app.post('/procesar-factura', async (req, res) => {
     }
     const ambienteSri = normalizarAmbiente(ambiente);
 
-    const xmlLimpio = limpiarXml(xml);
+    const xmlLimpio = escaparCamposXml(limpiarXml(xml));
     const diagnosticoXml = diagnosticarXml(xmlLimpio);
     if (!diagnosticoXml.ok) {
       return res.json({
